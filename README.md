@@ -195,8 +195,9 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 ### macOS
 
 The code builds and the test suite passes on macOS (CI checks every change), but there is no
-signed package yet. To try it: `brew install qt ninja ffmpeg`, then the same CMake commands as
-Linux; the app is `build/Open Media Encoder.app`.
+signed package yet. To try it: `brew install qt ninja`, then the same commands as Linux
+(`scripts/fetch-ffmpeg.sh` fetches a pinned FFmpeg 8.0.1 for Apple silicon or Intel); the app is
+`build/Open Media Encoder.app`.
 
 ## How it works
 
