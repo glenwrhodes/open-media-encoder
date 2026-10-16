@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/glenwrhodes/open-media-encoder/discussions
+    about: Ask questions, share presets and discuss ideas with the community.
+  - name: Security vulnerability
+    url: https://github.com/glenwrhodes/open-media-encoder/security/advisories/new
+    about: Please report security issues privately.

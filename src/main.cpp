@@ -1,0 +1,231 @@
+#include "core/AppSettings.h"
+#include "core/EncoderCaps.h"
+#include "core/EncoderEngine.h"
+#include "core/Formats.h"
+#include "core/MediaInfo.h"
+#include "core/PresetManager.h"
+#include "core/QueueModel.h"
+#include "ui/MainWindow.h"
+#include "ui/Theme.h"
+
+#include <QApplication>
+#include <QCommandLineParser>
+#include <QDir>
+#include <QFileInfo>
+#include <QPainter>
+#include <QPainterPath>
+#include <QTextStream>
+#include <QtConcurrent>
+#include <cstdio>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+namespace {
+
+QIcon appIcon()
+{
+    QIcon icon;
+    for (int s : {16, 24, 32, 48, 64, 128, 256}) {
+        QPixmap pm(s, s);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        QLinearGradient g(0, 0, s, s);
+        g.setColorAt(0, QColor(0x1f, 0x3a, 0x6b));
+        g.setColorAt(1, QColor(0x0b, 0x16, 0x2e));
+        p.setBrush(g);
+        p.setPen(Qt::NoPen);
+        p.drawRoundedRect(QRectF(0, 0, s, s), s * 0.2, s * 0.2);
+        QPainterPath tri;
+        tri.moveTo(s * 0.36, s * 0.26);
+        tri.lineTo(s * 0.76, s * 0.5);
+        tri.lineTo(s * 0.36, s * 0.74);
+        tri.closeSubpath();
+        p.setBrush(Theme::accent().lighter(130));
+        p.drawPath(tri);
+        p.setPen(QPen(QColor(0x9f, 0xd0, 0xff), qMax(1.0, s * 0.05)));
+        p.drawLine(QPointF(s * 0.2, s * 0.3), QPointF(s * 0.2, s * 0.7));
+        p.end();
+        icon.addPixmap(pm);
+    }
+    return icon;
+}
+
+void attachConsole()
+{
+#ifdef Q_OS_WIN
+    // Output already redirected to a file/pipe: keep the inherited handles.
+    const HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h != nullptr && h != INVALID_HANDLE_VALUE && GetFileType(h) != FILE_TYPE_UNKNOWN)
+        return;
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        FILE *f = nullptr;
+        freopen_s(&f, "CONOUT$", "w", stdout);
+        freopen_s(&f, "CONOUT$", "w", stderr);
+    }
+#endif
+}
+
+const Preset *findPreset(const QString &key)
+{
+    PresetManager &pm = PresetManager::instance();
+    if (const Preset *p = pm.find(key))
+        return p;
+    // "Format/Preset Name" or just "Preset Name".
+    const QString fmt = key.section('/', 0, 0);
+    const QString name = key.section('/', 1);
+    for (const Preset &p : pm.presets()) {
+        const FormatDef *f = Formats::format(p.settings.format);
+        if (!name.isEmpty() &&
+            (p.settings.format.compare(fmt, Qt::CaseInsensitive) == 0 ||
+             (f && f->displayName.compare(fmt, Qt::CaseInsensitive) == 0)) &&
+            p.name().compare(name, Qt::CaseInsensitive) == 0)
+            return &p;
+    }
+    for (const Preset &p : pm.presets())
+        if (p.name().compare(key, Qt::CaseInsensitive) == 0)
+            return &p;
+    return nullptr;
+}
+
+int runCli(QApplication &app, const QCommandLineParser &parser)
+{
+    attachConsole();
+    QTextStream out(stdout);
+    QTextStream err(stderr);
+
+    if (parser.isSet("list-presets")) {
+        for (const Preset &p : PresetManager::instance().presets())
+            out << p.id << "\n";
+        out.flush();
+        return 0;
+    }
+
+    const QStringList inputs = parser.positionalArguments();
+    if (inputs.isEmpty()) {
+        err << "No input files given.\n";
+        return 2;
+    }
+    const Preset *preset = findPreset(parser.value("preset"));
+    if (!preset) {
+        err << "Unknown preset: " << parser.value("preset") << " (use --list-presets)\n";
+        return 2;
+    }
+
+    QueueModel model;
+    EncoderEngine engine(&model);
+    const QString outArg = parser.value("output");
+    const bool stitch = parser.isSet("stitch");
+    QList<QStringList> sources;
+    if (stitch)
+        sources << inputs;
+    else
+        for (const QString &i : inputs)
+            sources << QStringList{QFileInfo(i).absoluteFilePath()};
+
+    for (const QStringList &files : sources) {
+        MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), files.first());
+        if (!info.valid) {
+            err << files.first() << ": " << info.error << "\n";
+            return 1;
+        }
+        double total = 0;
+        if (files.size() > 1) {
+            total = info.duration;
+            for (int i = 1; i < files.size(); ++i)
+                total += MediaInfo::probe(AppSettings::ffprobePath(), files[i]).duration;
+        }
+        const QString sid = model.addSource(files);
+        model.setSourceInfo(sid, info, total);
+        QString dir;
+        if (!outArg.isEmpty() && (sources.size() > 1 || QFileInfo(outArg).isDir()))
+            dir = outArg;
+        const QString oid = model.addOutput(sid, preset->settings, preset->id, dir);
+        if (!outArg.isEmpty() && dir.isEmpty())
+            model.setOutputPath(oid, QFileInfo(outArg).absoluteFilePath());
+        const double in = parser.isSet("in") ? parser.value("in").toDouble() : -1;
+        const double outPt = parser.isSet("out") ? parser.value("out").toDouble() : -1;
+        model.setOutputRange(oid, in, outPt);
+    }
+
+    int lastPct = -1;
+    QObject::connect(&engine, &EncoderEngine::taskStarted, [&](const QString &, const QString &oid) {
+        out << "Encoding -> " << QDir::toNativeSeparators(model.output(oid)->finalPath) << "\n";
+        out.flush();
+        lastPct = -1;
+    });
+    QObject::connect(&engine, &EncoderEngine::taskProgress, [&](const QString &, const EncodeStats &st) {
+        const int pct = int(st.progress * 100);
+        if (pct != lastPct) {
+            lastPct = pct;
+            out << "\r  " << pct << "%  " << QString::number(st.speed, 'f', 2) << "x   ";
+            out.flush();
+        }
+    });
+    QObject::connect(
+        &engine, &EncoderEngine::taskFinished, [&](const QString &, const QString &, bool ok, const QString &msg) {
+            out << "\r  " << (ok ? QStringLiteral("done") : QStringLiteral("FAILED: ") + msg) << "            \n";
+            out.flush();
+        });
+    int exitCode = 0;
+    QObject::connect(&engine, &EncoderEngine::queueFinished, [&](int, int failed) {
+        exitCode = failed ? 1 : 0;
+        app.quit();
+    });
+    QMetaObject::invokeMethod(&engine, &EncoderEngine::start, Qt::QueuedConnection);
+    app.exec();
+    return exitCode;
+}
+
+} // namespace
+
+int main(int argc, char *argv[])
+{
+    QApplication app(argc, argv);
+    QApplication::setApplicationName(QStringLiteral("OpenMediaEncoder"));
+    QApplication::setApplicationDisplayName(QStringLiteral("Open Media Encoder"));
+    QApplication::setOrganizationName(QStringLiteral("OpenMediaEncoder"));
+    QApplication::setApplicationVersion(QStringLiteral(OME_VERSION));
+    app.setWindowIcon(appIcon());
+
+    QCommandLineParser parser;
+    parser.setApplicationDescription(QStringLiteral("Open Media Encoder"));
+    parser.addHelpOption();
+    parser.addVersionOption();
+    parser.addOption(
+        {{"p", "preset"}, QStringLiteral("Encode headless with this preset id or name, then exit."), "preset"});
+    parser.addOption({{"o", "output"}, QStringLiteral("Output file (single input) or folder."), "path"});
+    parser.addOption({"in", QStringLiteral("Source in point in seconds."), "seconds"});
+    parser.addOption({"out", QStringLiteral("Source out point in seconds."), "seconds"});
+    parser.addOption({"stitch", QStringLiteral("Stitch all inputs together into one output.")});
+    parser.addOption({"list-presets", QStringLiteral("List available preset ids and exit.")});
+    parser.addPositionalArgument(QStringLiteral("files"), QStringLiteral("Media files to add to the queue."),
+                                 "[files...]");
+    parser.process(app);
+
+    EncoderCaps::instance().probe(AppSettings::ffmpegPath());
+    PresetManager::instance().load();
+
+    if (parser.isSet("preset") || parser.isSet("list-presets")) {
+        EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());
+        PresetManager::instance().load();
+        return runCli(app, parser);
+    }
+
+    Theme::apply(app);
+    MainWindow w;
+    w.show();
+    w.addFiles(parser.positionalArguments());
+
+    // Verify hardware encoders in the background, then refresh presets that depend on them.
+    auto *watcher = new QFutureWatcher<void>(&w);
+    QObject::connect(watcher, &QFutureWatcher<void>::finished, &w, [watcher] {
+        PresetManager::instance().load();
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([] { EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath()); }));
+
+    return app.exec();
+}

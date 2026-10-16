@@ -1,0 +1,18 @@
+# Build output
+/build*/
+/dist/
+/out/
+CMakeUserPresets.json
+CMakeLists.txt.user*
+*.user
+
+# Downloaded at build time by scripts/fetch-ffmpeg.ps1
+/third_party/ffmpeg/
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store

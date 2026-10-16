@@ -1,0 +1,111 @@
+#pragma once
+
+#include <QJsonObject>
+#include <QString>
+
+struct MediaInfo;
+
+struct VideoSettings {
+    bool enabled = true;
+    QString codec;
+    int width = 0; // 0 = match source
+    int height = 0;
+    QString scaleMode = "fit";          // fit (letterbox), fill (crop), stretch
+    double frameRate = 0.0;             // 0 = match source
+    QString frameRateMode = "frame";    // frame sampling, blend, optical (motion interpolation)
+    QString fieldOrder = "progressive"; // progressive, tff, bff
+    bool deinterlace = false;
+    QString pixelFormat; // empty = auto
+    QString speedPreset;
+    QString profile;
+    QString level;
+    QString rateControl = "vbr1";
+    double targetBitrate = 10.0; // Mbps
+    double maxBitrate = 12.0;    // Mbps
+    int quality = 23;
+    int keyframeInterval = 0;   // frames, 0 = encoder default
+    bool imageSequence = true;  // image formats: sequence vs. single still
+    double stillDuration = 5.0; // seconds of video generated from a still source
+    QString extraArgs;
+};
+
+struct AudioSettings {
+    bool enabled = true;
+    QString codec;
+    int sampleRate = 48000; // 0 = match source
+    int channels = 2;       // 0 = match source
+    int bitrate = 320;      // kbps
+    QString extraArgs;
+};
+
+struct EffectsSettings {
+    bool lutEnabled = false;
+    QString lutPath;
+
+    bool imageOverlayEnabled = false;
+    QString imagePath;
+    QString imagePosition = "bottom-right";
+    int imageOffset = 32;
+    int imageScale = 100;   // percent
+    int imageOpacity = 100; // percent
+
+    bool textOverlayEnabled = false;
+    QString text;
+    QString textPosition = "bottom-center";
+    int textSize = 48;
+    QString textColor = "#ffffff";
+    int textOpacity = 100;
+    bool textBox = true;
+    int textOffset = 48;
+
+    bool timecodeEnabled = false;
+    QString timecodePosition = "top-left";
+    int timecodeSize = 40;
+    bool timecodeFromSource = true;
+    QString timecodeStart = "00:00:00:00";
+
+    bool limiterEnabled = false; // clamp luma/chroma to broadcast-legal range
+
+    bool loudnessEnabled = false;  // EBU R128 / ITU BS.1770 normalization
+    double loudnessTarget = -23.0; // LUFS
+    double truePeak = -2.0;        // dBTP
+    double loudnessRange = 11.0;   // LU
+
+    bool captionsEnabled = false; // burn-in subtitles
+    QString captionFile;
+    int captionSize = 24;
+
+    bool cropEnabled = false;
+    int cropLeft = 0;
+    int cropTop = 0;
+    int cropRight = 0;
+    int cropBottom = 0;
+
+    bool anyEnabled() const;
+};
+
+// Everything needed to describe one output: format, codec settings and effects.
+struct ExportSettings {
+    QString presetName;
+    QString format;
+    QString comment;
+    VideoSettings video;
+    AudioSettings audio;
+    EffectsSettings effects;
+    bool maxRenderQuality = false;
+
+    QJsonObject toJson() const;
+    static ExportSettings fromJson(const QJsonObject &o);
+
+    // Selects the format and fills in its first available codecs with their defaults.
+    void setFormat(const QString &formatId);
+    // Resets codec-dependent fields (speed, profile, pixel format, rate control) to codec defaults.
+    void applyVideoCodecDefaults();
+    void applyAudioCodecDefaults();
+
+    QString extension() const;
+    bool isImageSequence() const;
+    QString summary(const MediaInfo *source = nullptr) const;
+    // Estimated size in bytes for the given duration, or -1 when it can't be estimated.
+    qint64 estimateSize(double seconds, const MediaInfo *source = nullptr) const;
+};
