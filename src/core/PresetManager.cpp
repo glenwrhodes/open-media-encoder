@@ -92,7 +92,7 @@ void PresetManager::buildSystemPresets()
         bitrate(s, 5, 6);
         s.audio.bitrate = 192;
         add(s);
-        const QString hw = firstHardware({"h264_nvenc", "h264_qsv", "h264_amf"});
+        const QString hw = firstHardware({"h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi"});
         if (!hw.isEmpty()) {
             s = withCodec(base("h264", "Match Source - Hardware Encoding"), hw);
             bitrate(s, 10, 12);
@@ -199,7 +199,7 @@ void PresetManager::buildSystemPresets()
             add(s);
         }
         // A smaller-file 4K option for YouTube, on the GPU when available.
-        const QString hevc = firstHardware({"hevc_nvenc", "hevc_qsv", "hevc_amf"});
+        const QString hevc = firstHardware({"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_videotoolbox", "hevc_vaapi"});
         auto s = hevc.isEmpty() ? base("hevc", "YouTube 2160p 4K HEVC")
                                 : withCodec(base("hevc", "YouTube 2160p 4K HEVC"), hevc);
         s.group = "YouTube";
@@ -224,7 +224,7 @@ void PresetManager::buildSystemPresets()
         s.video.profile = "main10";
         bitrate(s, 12, 15);
         add(s);
-        const QString hw = firstHardware({"hevc_nvenc", "hevc_qsv", "hevc_amf"});
+        const QString hw = firstHardware({"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_videotoolbox", "hevc_vaapi"});
         if (!hw.isEmpty()) {
             s = withCodec(base("hevc", "Match Source - Hardware Encoding"), hw);
             bitrate(s, 10, 12);
@@ -257,7 +257,7 @@ void PresetManager::buildSystemPresets()
     }
     // ---------------- AV1
     {
-        const QString hw = firstHardware({"av1_nvenc", "av1_qsv"});
+        const QString hw = firstHardware({"av1_nvenc", "av1_qsv", "av1_vaapi"});
         if (!hw.isEmpty()) {
             auto s = withCodec(base("av1", "Match Source - Hardware Encoding"), hw);
             bitrate(s, 8, 10);

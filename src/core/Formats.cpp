@@ -121,6 +121,41 @@ QList<VideoCodecDef> buildVideoCodecs()
         l << c;
     }
 
+    // Apple VideoToolbox (macOS) and VA-API (Linux: Intel, AMD and other Mesa drivers).
+    {
+        auto c = make("h264_videotoolbox", "H.264 (Hardware - Apple VideoToolbox)");
+        c.hardware = true;
+        c.profiles = {"baseline", "main", "high"};
+        c.profileLabels = {"Baseline", "Main", "High"};
+        c.defaultProfile = "high";
+        c.pixelFormats = {"nv12"};
+        c.defaultPixelFormat = "nv12";
+        c.rateControls = {"cbr", "vbr1", "quality"};
+        c.defaultRateControl = "vbr1";
+        c.qualityArg = "-q:v";
+        c.qualityMin = 1;
+        c.qualityMax = 100;
+        c.defaultQuality = 65;
+        l << c;
+    }
+    {
+        auto c = make("h264_vaapi", "H.264 (Hardware - VA-API)");
+        c.hardware = true;
+        c.profiles = {"constrained_baseline", "main", "high"};
+        c.profileLabels = {"Constrained Baseline", "Main", "High"};
+        c.defaultProfile = "high";
+        c.levels = h264Levels();
+        c.pixelFormats = {"nv12"};
+        c.defaultPixelFormat = "nv12";
+        c.rateControls = {"cbr", "vbr1", "quality"};
+        c.defaultRateControl = "vbr1";
+        c.qualityArg = "-qp";
+        c.qualityMin = 1;
+        c.qualityMax = 51;
+        c.defaultQuality = 23;
+        l << c;
+    }
+
     // ---- HEVC ----
     {
         auto c = make("libx265", "HEVC (Software Encoding)");
@@ -203,6 +238,40 @@ QList<VideoCodecDef> buildVideoCodecs()
         l << c;
     }
 
+    {
+        auto c = make("hevc_videotoolbox", "HEVC (Hardware - Apple VideoToolbox)");
+        c.hardware = true;
+        c.profiles = {"main", "main10"};
+        c.profileLabels = {"Main", "Main 10"};
+        c.defaultProfile = "main";
+        c.pixelFormats = {"nv12", "p010le"};
+        c.defaultPixelFormat = "nv12";
+        c.rateControls = {"cbr", "vbr1", "quality"};
+        c.defaultRateControl = "vbr1";
+        c.qualityArg = "-q:v";
+        c.qualityMin = 1;
+        c.qualityMax = 100;
+        c.defaultQuality = 60;
+        l << c;
+    }
+    {
+        auto c = make("hevc_vaapi", "HEVC (Hardware - VA-API)");
+        c.hardware = true;
+        c.profiles = {"main", "main10"};
+        c.profileLabels = {"Main", "Main 10"};
+        c.defaultProfile = "main";
+        c.levels = hevcLevels();
+        c.pixelFormats = {"nv12", "p010le"};
+        c.defaultPixelFormat = "nv12";
+        c.rateControls = {"cbr", "vbr1", "quality"};
+        c.defaultRateControl = "vbr1";
+        c.qualityArg = "-qp";
+        c.qualityMin = 1;
+        c.qualityMax = 51;
+        c.defaultQuality = 25;
+        l << c;
+    }
+
     // ---- AV1 ----
     {
         auto c = make("libaom-av1", "AV1 (Software - libaom)");
@@ -250,6 +319,20 @@ QList<VideoCodecDef> buildVideoCodecs()
         c.qualityMin = 1;
         c.qualityMax = 51;
         c.defaultQuality = 28;
+        l << c;
+    }
+
+    {
+        auto c = make("av1_vaapi", "AV1 (Hardware - VA-API)");
+        c.hardware = true;
+        c.pixelFormats = {"nv12", "p010le"};
+        c.defaultPixelFormat = "nv12";
+        c.rateControls = {"cbr", "vbr1", "quality"};
+        c.defaultRateControl = "vbr1";
+        c.qualityArg = "-qp";
+        c.qualityMin = 1;
+        c.qualityMax = 255;
+        c.defaultQuality = 110;
         l << c;
     }
 
@@ -469,19 +552,21 @@ FormatDef makeFormat(const QString &id, const QString &name, const QString &ext,
 QList<FormatDef> buildFormats()
 {
     QList<FormatDef> l;
-    l << makeFormat("h264", "H.264", "mp4", "mp4", {"libx264", "h264_nvenc", "h264_qsv", "h264_amf"},
+    l << makeFormat("h264", "H.264", "mp4", "mp4",
+                    {"libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi"},
                     {"aac", "ac3", "libmp3lame"},
                     "MPEG-4 AVC in an MP4 container. Best for web delivery and playback.");
-    l << makeFormat("hevc", "HEVC (H.265)", "mp4", "mp4", {"libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf"},
+    l << makeFormat("hevc", "HEVC (H.265)", "mp4", "mp4",
+                    {"libx265", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_videotoolbox", "hevc_vaapi"},
                     {"aac", "ac3"},
                     "High Efficiency Video Coding in an MP4 container. Smaller files, 10-bit/HDR capable.");
-    l << makeFormat("av1", "AV1", "mp4", "mp4", {"av1_nvenc", "libaom-av1", "av1_qsv"}, {"aac", "libopus"},
+    l << makeFormat("av1", "AV1", "mp4", "mp4", {"av1_nvenc", "libaom-av1", "av1_qsv", "av1_vaapi"}, {"aac", "libopus"},
                     "AOMedia Video 1 in an MP4 container.");
-    l << makeFormat(
-        "quicktime", "QuickTime", "mov", "mov",
-        {"prores_ks", "dnxhd", "cfhd", "qtrle", "png", "mjpeg", "libx264", "h264_nvenc", "libx265", "hevc_nvenc"},
-        {"pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "aac"},
-        "Apple QuickTime movie. Mastering and intermediate codecs (ProRes, DNxHR, CineForm, Animation).");
+    l << makeFormat("quicktime", "QuickTime", "mov", "mov",
+                    {"prores_ks", "dnxhd", "cfhd", "qtrle", "png", "mjpeg", "libx264", "h264_nvenc",
+                     "h264_videotoolbox", "libx265", "hevc_nvenc", "hevc_videotoolbox"},
+                    {"pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_f32le", "aac"},
+                    "Apple QuickTime movie. Mastering and intermediate codecs (ProRes, DNxHR, CineForm, Animation).");
     l << makeFormat("mxf", "MXF OP1a", "mxf", "mxf", {"dnxhd", "mpeg2video"}, {"pcm_s16le", "pcm_s24le"},
                     "Material eXchange Format (OP1a) for broadcast and editorial workflows.");
     l << makeFormat("mpeg2", "MPEG-2", "mpg", "mpeg", {"mpeg2video"}, {"mp2", "ac3"}, "MPEG-2 program stream.");

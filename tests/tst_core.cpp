@@ -101,6 +101,7 @@ private slots:
     void recordHlsWithTimeLimit();
     void recordSplitVideoAndAudio();
     void recordDeadLinkFails();
+    void hardwareEncoderCommands(); // keep last: it swaps the encoder list and probes again afterwards
 
 private:
     bool runFfmpeg(const QStringList &args, QString *err = nullptr, int timeoutMs = 180000);
@@ -1095,7 +1096,11 @@ void CoreTests::recordSplitVideoAndAudio()
     TinyHttpServer http(hls);
     QVERIFY(http.isListening());
     // Feed the recorder a resolved page through a stand-in for yt-dlp.
+#ifdef Q_OS_WIN
     const QString fakeYtDlp = m_dir.filePath("fake-yt-dlp.cmd");
+#else
+    const QString fakeYtDlp = m_dir.filePath("fake-yt-dlp.sh");
+#endif
     {
         QFile f(fakeYtDlp);
         QVERIFY(f.open(QIODevice::WriteOnly));
@@ -1103,7 +1108,13 @@ void CoreTests::recordSplitVideoAndAudio()
                                             R"({"url":"%1","vcodec":"h264","acodec":"none"},)"
                                             R"({"url":"%2","vcodec":"none","acodec":"aac"}]})")
                                  .arg(http.url("video.m3u8"), http.url("audio.m3u8"));
+#ifdef Q_OS_WIN
         f.write("@echo off\r\necho " + json.toUtf8() + "\r\n");
+#else
+        f.write("#!/bin/sh\ncat <<'JSON'\n" + json.toUtf8() + "\nJSON\n");
+        f.close();
+        f.setPermissions(f.permissions() | QFile::ExeOwner | QFile::ExeUser);
+#endif
     }
     RecordingOptions opt;
     opt.url = "https://www.example.com/watch?v=live";
@@ -1142,6 +1153,53 @@ void CoreTests::recordDeadLinkFails()
     QVERIFY(rec->files().isEmpty());
     QVERIFY(QDir(opt.outputDir).entryList(QDir::Files).isEmpty());
     qInfo() << "dead link failed after" << t.elapsed() << "ms:" << rec->error();
+}
+
+void CoreTests::hardwareEncoderCommands()
+{
+    // VA-API (Linux) and VideoToolbox (macOS) can't run on every CI machine, so check the commands.
+    EncoderCaps::instance().setAvailable({"h264_vaapi", "hevc_vaapi", "h264_videotoolbox", "hevc_videotoolbox", "aac"},
+                                         {"scale", "format", "hwupload", "fps", "setsar"});
+    auto argsFor = [&](const QString &format, const QString &codec, const QString &rc, const QString &profile) {
+        ExportSettings s;
+        s.setFormat(format);
+        s.video.codec = codec;
+        s.applyVideoCodecDefaults();
+        s.video.rateControl = rc;
+        if (!profile.isEmpty())
+            s.video.profile = profile;
+        s.audio.codec = "aac";
+        const BuildResult r = CommandBuilder::build(requestFor(s, m_dir.filePath("hw.mp4")));
+        return r.ok() ? r.args : QStringList{"ERROR: " + r.error};
+    };
+
+    QStringList a = argsFor("h264", "h264_vaapi", "vbr1", {});
+    QVERIFY2(a.contains("-vaapi_device"), qPrintable(a.join(' ')));
+    QVERIFY(a.indexOf("-vaapi_device") < a.indexOf("-i")); // a global option, before the input
+    QVERIFY2(a.at(a.indexOf("-filter_complex") + 1).endsWith("format=nv12,hwupload[vout]"), qPrintable(a.join(' ')));
+    QVERIFY(!a.contains("-pix_fmt"));
+    QCOMPARE(a.at(a.indexOf("-rc_mode") + 1), QString("VBR"));
+    QVERIFY(a.contains("-maxrate"));
+
+    a = argsFor("hevc", "hevc_vaapi", "quality", "main10");
+    QVERIFY2(a.at(a.indexOf("-filter_complex") + 1).endsWith("format=p010le,hwupload[vout]"), qPrintable(a.join(' ')));
+    QCOMPARE(a.at(a.indexOf("-rc_mode") + 1), QString("CQP"));
+    QCOMPARE(a.at(a.indexOf("-profile:v") + 1), QString("main10"));
+
+    a = argsFor("hevc", "hevc_videotoolbox", "quality", {});
+    QVERIFY(!a.contains("-vaapi_device"));
+    QCOMPARE(a.at(a.indexOf("-pix_fmt") + 1), QString("nv12"));
+    QCOMPARE(a.at(a.indexOf("-q:v") + 1), QString("60"));
+    QCOMPARE(a.at(a.indexOf("-tag:v") + 1), QString("hvc1"));
+
+    a = argsFor("h264", "h264_videotoolbox", "cbr", {});
+    QCOMPARE(a.at(a.indexOf("-b:v") + 1), a.at(a.indexOf("-maxrate") + 1));
+    QCOMPARE(a.at(a.indexOf("-profile:v") + 1), QString("high"));
+
+    // Put the real encoder list back.
+    EncoderCaps::instance().probe(AppSettings::ffmpegPath());
+    EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());
+    QVERIFY(EncoderCaps::instance().hasEncoder("libx264"));
 }
 
 QTEST_GUILESS_MAIN(CoreTests)

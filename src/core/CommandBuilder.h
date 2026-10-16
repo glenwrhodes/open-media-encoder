@@ -52,5 +52,9 @@ QString firstSequenceFile(const QString &pattern);
 qint64 timecodeToFrames(const QString &tc, int fps);
 QString framesToTimecode(qint64 frames, int fps);
 QString findDefaultFont();
+// Global options a hardware encoder needs before the inputs (VA-API device), empty for others.
+QStringList hardwareDeviceArgs(const QString &codec);
+// The VA-API render node to encode on (Linux), empty when there is none.
+QString vaapiDevice();
 
 } // namespace CommandBuilder

@@ -732,14 +732,7 @@ void MainWindow::revealSelection()
     QString path = o->finalPath.isEmpty() ? o->outputPath : o->finalPath;
     if (path.contains(QStringLiteral("%05d")))
         path = CommandBuilder::firstSequenceFile(path);
-#ifdef Q_OS_WIN
-    if (QFileInfo::exists(path)) {
-        QProcess::startDetached(QStringLiteral("explorer.exe"),
-                                {QStringLiteral("/select,") + QDir::toNativeSeparators(path)});
-        return;
-    }
-#endif
-    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+    SystemIntegration::revealInFileManager(path);
 }
 
 void MainWindow::editSelection()

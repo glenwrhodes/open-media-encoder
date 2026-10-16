@@ -8,6 +8,7 @@
 #include "core/MediaFileModel.h"
 #include "core/MediaInfoCache.h"
 #include "core/PresetManager.h"
+#include "core/SystemIntegration.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -49,15 +50,7 @@ QToolButton *toolButton(const QString &icon, const QString &tip)
     return b;
 }
 
-void revealInExplorer(const QString &path)
-{
-#ifdef Q_OS_WIN
-    QProcess::startDetached(QStringLiteral("explorer.exe"),
-                            {QStringLiteral("/select,") + QDir::toNativeSeparators(path)});
-#else
-    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
-#endif
-}
+void revealInExplorer(const QString &path) { SystemIntegration::revealInFileManager(path); }
 
 } // namespace
 
@@ -251,6 +244,8 @@ MediaBrowser::MediaBrowser(QWidget *parent)
     QString start = AppSettings::value("browser/lastDir").toString();
     if (start.isEmpty() || !QDir(start).exists())
         start = QStandardPaths::writableLocation(QStandardPaths::MoviesLocation);
+    if (!QDir(start).exists()) // no Videos folder (common on minimal Linux installs)
+        start = QDir::homePath();
     setRootPath(start);
     updateMetadataEnabled();
 }

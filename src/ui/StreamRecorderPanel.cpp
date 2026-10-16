@@ -4,6 +4,7 @@
 #include "core/AppSettings.h"
 #include "core/MediaInfo.h"
 #include "core/StreamRecorder.h"
+#include "core/SystemIntegration.h"
 #include "core/YtDlp.h"
 
 #include <QApplication>
@@ -383,15 +384,7 @@ void StreamRecorderPanel::revealRecording(StreamRecording *r)
 {
     const QStringList files = r->files();
     const QString file = files.isEmpty() ? QString() : files.last();
-#ifdef Q_OS_WIN
-    if (QFileInfo::exists(file)) {
-        QProcess::startDetached(QStringLiteral("explorer.exe"),
-                                {QStringLiteral("/select,"), QDir::toNativeSeparators(file)});
-        return;
-    }
-#endif
-    const QString dir = file.isEmpty() ? r->options().outputDir : QFileInfo(file).absolutePath();
-    QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
+    SystemIntegration::revealInFileManager(file.isEmpty() ? r->options().outputDir : file);
 }
 
 void StreamRecorderPanel::showContextMenu(const QPoint &pos)

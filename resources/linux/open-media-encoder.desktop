@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Open Media Encoder
+GenericName=Media Encoder
+Comment=Batch-convert video and audio, and record live streams
+Exec=OpenMediaEncoder %F
+Icon=open-media-encoder
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=video/mp4;video/quicktime;video/x-matroska;video/webm;video/x-msvideo;video/mpeg;video/mp2t;audio/mpeg;audio/x-wav;audio/flac;audio/aac;audio/ogg;
+Keywords=convert;transcode;encode;ffmpeg;record;stream;
+StartupWMClass=OpenMediaEncoder

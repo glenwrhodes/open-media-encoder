@@ -17,6 +17,13 @@ them as separate programs; it does not link against FFmpeg libraries.
 - Build provenance: <https://github.com/GyanD/codexffmpeg/releases/tag/8.0.1>
 - The exact archive is pinned by SHA-256 in [`scripts/fetch-ffmpeg.ps1`](scripts/fetch-ffmpeg.ps1).
 
+On Linux, packages bundle unmodified static `ffmpeg` and `ffprobe` binaries (version 8.0.1, GPL
+build by [BtbN/FFmpeg-Builds](https://github.com/BtbN/FFmpeg-Builds), release
+`autobuild-2026-02-28-12-59`), likewise under the **GNU General Public License v3**, with the license
+in `usr/share/doc/open-media-encoder/licenses/`. The archive is pinned by SHA-256 in
+[`scripts/fetch-ffmpeg.sh`](scripts/fetch-ffmpeg.sh); build scripts and sources are linked from
+that release.
+
 You can replace the bundled FFmpeg with any other build under *Preferences → FFmpeg*.
 
 ## yt-dlp (downloaded on demand, not bundled)
@@ -35,6 +42,15 @@ Open Media Encoder is built with [Qt 6](https://www.qt.io/), used under the
 **GNU Lesser General Public License v3**. Qt is linked dynamically: the Qt DLLs in the
 package can be replaced with your own compatible builds. Qt source is available from
 <https://download.qt.io/official_releases/qt/>.
+
+## Linux AppImage libraries
+
+The Linux AppImage and `.tar.gz` also carry the Qt libraries and plugins (LGPL v3, as above), the
+ICU libraries that Qt uses (Unicode license) and a few system libraries from Ubuntu 22.04 that
+are not guaranteed on every distribution (for example libdbus, libxcb-cursor and libpcre), each
+under its own open-source license (LGPL, MIT/X11 or BSD-style). They are unmodified; their
+copyright files are included where available, and sources are available from the respective
+projects and from Ubuntu.
 
 ## MinGW-w64 runtime
 

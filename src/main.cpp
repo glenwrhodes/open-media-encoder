@@ -19,12 +19,15 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QTextStream>
+#include <QTimer>
 #include <QtConcurrent>
 #include <atomic>
 #include <cstdio>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#else
+#include <csignal>
 #endif
 
 namespace {
@@ -198,6 +201,11 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
 
 std::atomic<StreamRecording *> g_cliRecording{nullptr};
 
+#ifndef Q_OS_WIN
+std::atomic<bool> g_stopSignal{false};
+void onStopSignal(int) { g_stopSignal = true; }
+#endif
+
 #ifdef Q_OS_WIN
 BOOL WINAPI onConsoleCtrl(DWORD type)
 {
@@ -286,6 +294,17 @@ int runRecordCli(QApplication &app, const QCommandLineParser &parser)
     QObject::connect(&recorder, &StreamRecorder::recordingFinished, &app, [&](StreamRecording *) { app.quit(); });
 #ifdef Q_OS_WIN
     SetConsoleCtrlHandler(onConsoleCtrl, TRUE);
+#else
+    // Signal handlers may only set a flag; the event loop picks it up.
+    std::signal(SIGINT, onStopSignal);
+    std::signal(SIGTERM, onStopSignal);
+    std::signal(SIGHUP, onStopSignal);
+    QTimer stopPoll;
+    QObject::connect(&stopPoll, &QTimer::timeout, [&] {
+        if (g_stopSignal.exchange(false) && rec)
+            rec->stop();
+    });
+    stopPoll.start(200);
 #endif
     out << "Recording " << opt.url << " (Ctrl+C to stop)\n";
     out.flush();
@@ -310,6 +329,20 @@ int runRecordCli(QApplication &app, const QCommandLineParser &parser)
 
 int main(int argc, char *argv[])
 {
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
+    // Command-line runs on a server without a display: use Qt's offscreen platform instead of failing.
+    if (qEnvironmentVariableIsEmpty("DISPLAY") && qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY") &&
+        qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+        for (int i = 1; i < argc; ++i) {
+            const QByteArray a(argv[i]);
+            if (a.startsWith("--preset") || a == "-p" || a.startsWith("--record") || a == "--list-presets" ||
+                a == "--help" || a == "-h" || a == "--version" || a == "-v") {
+                qputenv("QT_QPA_PLATFORM", "offscreen");
+                break;
+            }
+        }
+    }
+#endif
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("OpenMediaEncoder"));
     QApplication::setApplicationDisplayName(QStringLiteral("Open Media Encoder"));

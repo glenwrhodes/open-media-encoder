@@ -18,6 +18,8 @@
 
 #ifdef Q_OS_WIN
 #include <windows.h>
+#else
+#include <unistd.h>
 #endif
 
 namespace {
@@ -257,7 +259,8 @@ void StreamRecording::prepare(QProcess *p)
     p->setCreateProcessArgumentsModifier(
         [](QProcess::CreateProcessArguments *args) { args->flags |= CREATE_NEW_PROCESS_GROUP; });
 #else
-    Q_UNUSED(p);
+    // Its own process group, so Ctrl+C in a terminal reaches only us.
+    p->setChildProcessModifier([] { ::setpgid(0, 0); });
 #endif
 }
 
@@ -396,10 +399,15 @@ void StreamRecording::startPart()
     // Separate picture and sound streams share one clock; keep their original timestamps so they stay in sync.
     if (split)
         args << "-copyts";
-    args << StreamLink::inputArgs(m_streamUrl, m_headers) << "-i" << m_streamUrl;
+    // Live HLS normally starts three segments back and reads that backlog ahead, which with two inputs
+    // overshoots time limits by a segment or more; start at the newest segment instead.
+    auto liveStart = [split](const QString &url) {
+        return split && url.contains(QStringLiteral(".m3u8")) ? QStringList{"-live_start_index", "-1"} : QStringList{};
+    };
+    args << StreamLink::inputArgs(m_streamUrl, m_headers) << liveStart(m_streamUrl) << "-i" << m_streamUrl;
     if (split)
-        args << StreamLink::inputArgs(m_audioUrl, m_headers) << "-i" << m_audioUrl << "-map" << "0:v:0" << "-map"
-             << "1:a:0" << "-avoid_negative_ts" << "make_zero";
+        args << StreamLink::inputArgs(m_audioUrl, m_headers) << liveStart(m_audioUrl) << "-i" << m_audioUrl << "-map"
+             << "0:v:0" << "-map" << "1:a:0" << "-avoid_negative_ts" << "make_zero";
     args << "-c" << "copy";
     // -t doesn't work with -copyts, so split streams are stopped from onReadyStdout() instead.
     if (m_options.maxSeconds > 0 && !split)
@@ -545,6 +553,7 @@ void StreamRecording::onPartFinished(int exitCode, QProcess::ExitStatus status)
         if (info.valid && info.duration > 0)
             partSeconds = info.duration;
         m_files << m_partFile;
+        m_fileSeconds << partSeconds;
         m_prevSeconds += partSeconds;
         m_prevBytes += size;
         if (partSeconds >= 10)
@@ -600,43 +609,76 @@ void StreamRecording::finish()
         fail(m_error.isEmpty() ? QStringLiteral("Nothing was recorded") : m_error);
         return;
     }
-    if (m_options.container == "mp4") {
-        m_toConvert = m_files;
-        convertNext();
-        return;
+    // Separate picture and sound can't use ffmpeg's own time limit and run a few seconds over, so
+    // trim the last part; MP4 recordings are converted from MKV. Both are lossless stream copies.
+    const bool mp4 = m_options.container == "mp4";
+    const double over = m_options.maxSeconds > 0 ? m_prevSeconds - m_options.maxSeconds : 0.0;
+    m_finishSteps.clear();
+    for (int i = 0; i < m_files.size(); ++i) {
+        FinishStep step{m_files[i], 0.0};
+        if (i == m_files.size() - 1 && over > 1.0)
+            step.keepSeconds = qMax(1.0, m_fileSeconds.value(i) - over);
+        if (mp4 || step.keepSeconds > 0)
+            m_finishSteps << step;
     }
-    complete();
+    convertNext();
 }
 
 void StreamRecording::convertNext()
 {
-    if (m_toConvert.isEmpty()) {
+    if (m_finishSteps.isEmpty()) {
         complete();
         return;
     }
-    const QString in = m_toConvert.takeFirst();
+    const FinishStep step = m_finishSteps.takeFirst();
+    const QString in = step.file;
     const QFileInfo fi(in);
-    const QString out = CommandBuilder::uniqueOutputPath(fi.dir().filePath(fi.completeBaseName() + ".mp4"));
+    const bool toMp4 = m_options.container == "mp4";
+    // Trimming without conversion writes a temporary file that then replaces the original.
+    const QString out = toMp4 ? CommandBuilder::uniqueOutputPath(fi.dir().filePath(fi.completeBaseName() + ".mp4"))
+                              : fi.dir().filePath(fi.completeBaseName() + ".trimmed." + fi.suffix());
     setState(State::Converting);
     m_proc = new QProcess(this);
     prepare(m_proc);
-    connect(m_proc, &QProcess::finished, this, [this, in, out](int code, QProcess::ExitStatus status) {
+    connect(m_proc, &QProcess::finished, this, [this, in, out, toMp4](int code, QProcess::ExitStatus status) {
         QProcess *p = m_proc;
         m_proc = nullptr;
         p->deleteLater();
+        const int index = m_files.indexOf(in);
         if (status == QProcess::NormalExit && code == 0 && QFileInfo(out).size() > 0) {
             QFile::remove(in);
-            m_files.replace(m_files.indexOf(in), out);
+            QString final = out;
+            if (!toMp4 && QFile::rename(out, in))
+                final = in;
+            m_files.replace(index, final);
+            // Keep the reported length and size in step with the files.
+            const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), final, 15000);
+            if (info.valid && info.duration > 0 && index < m_fileSeconds.size()) {
+                m_prevSeconds += info.duration - m_fileSeconds[index];
+                m_fileSeconds[index] = info.duration;
+            }
+            m_prevBytes = 0;
+            for (const QString &f : std::as_const(m_files))
+                m_prevBytes += QFileInfo(f).size();
         } else {
             QFile::remove(out);
             const QStringList lines = QString::fromUtf8(p->readAllStandardError()).split('\n', Qt::SkipEmptyParts);
-            m_note = QStringLiteral("Kept as MKV because it couldn't be converted to MP4") +
-                     (lines.isEmpty() ? QString() : QStringLiteral(": ") + lines.constLast().trimmed());
+            const QString why = lines.isEmpty() ? QString() : QStringLiteral(": ") + lines.constLast().trimmed();
+            m_note = toMp4 ? QStringLiteral("Kept as MKV because it couldn't be converted to MP4") + why
+                           : QStringLiteral("Couldn't trim to the time limit") + why;
         }
         convertNext();
     });
-    m_proc->start(m_ffmpeg, {"-hide_banner", "-loglevel", "error", "-y", "-i", in, "-map", "0:v?", "-map", "0:a?", "-c",
-                             "copy", "-movflags", "+faststart", out});
+    QStringList args{"-hide_banner", "-loglevel", "error", "-y",   "-i", in,
+                     "-map",         "0:v?",      "-map",  "0:a?", "-c", "copy"};
+    if (step.keepSeconds > 0)
+        args << "-t" << QString::number(step.keepSeconds, 'f', 3);
+    if (toMp4)
+        args << "-movflags" << "+faststart";
+    else if (fi.suffix() == QLatin1String("ts"))
+        args << "-f" << "mpegts";
+    args << out;
+    m_proc->start(m_ffmpeg, args);
 }
 
 void StreamRecording::complete()
@@ -697,7 +739,7 @@ QString StreamRecording::stateText() const
     case State::Reconnecting:
         return QStringLiteral("Stream dropped, retrying (%1 of %2)…").arg(m_failedAttempts).arg(MaxReconnectAttempts);
     case State::Converting:
-        return QStringLiteral("Converting to MP4…");
+        return m_options.container == "mp4" ? QStringLiteral("Converting to MP4…") : QStringLiteral("Finishing…");
     case State::Done:
         return m_endReason.isEmpty() ? QStringLiteral("Done") : QStringLiteral("Done (%1)").arg(m_endReason);
     case State::Failed:

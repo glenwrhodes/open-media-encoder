@@ -28,6 +28,22 @@ QString exeName(const QString &base)
 #endif
 }
 
+// Looks a tool up on PATH, then in well-known install folders. Apps started from the macOS Dock or a
+// Linux desktop launcher don't get the shell's PATH, so Homebrew and similar folders are checked too.
+QString findTool(const QString &base)
+{
+    const QString onPath = QStandardPaths::findExecutable(base);
+    if (!onPath.isEmpty())
+        return onPath;
+#ifdef Q_OS_WIN
+    const QStringList dirs{QStringLiteral("C:/ffmpeg"), QStringLiteral("C:/ffmpeg/bin")};
+#else
+    const QStringList dirs{QStringLiteral("/opt/homebrew/bin"), QStringLiteral("/usr/local/bin"),
+                           QStringLiteral("/usr/bin"), QDir::home().filePath(QStringLiteral(".local/bin"))};
+#endif
+    return QStandardPaths::findExecutable(base, dirs);
+}
+
 QString ensureDir(const QString &path)
 {
     QDir().mkpath(path);
@@ -58,15 +74,8 @@ QString ffmpegPath()
     const QString bundled = bundledFfmpegPath();
     if (!bundled.isEmpty())
         return bundled;
-    const QString onPath = QStandardPaths::findExecutable("ffmpeg");
-    if (!onPath.isEmpty())
-        return onPath;
-#ifdef Q_OS_WIN
-    for (const QString &c : {QStringLiteral("C:/ffmpeg/ffmpeg.exe"), QStringLiteral("C:/ffmpeg/bin/ffmpeg.exe")})
-        if (QFileInfo::exists(c))
-            return c;
-#endif
-    return exeName("ffmpeg");
+    const QString found = findTool(QStringLiteral("ffmpeg"));
+    return found.isEmpty() ? exeName("ffmpeg") : found;
 }
 
 QString ffprobePath()
@@ -78,8 +87,8 @@ QString ffprobePath()
     const QString sibling = ff.dir().filePath(exeName("ffprobe"));
     if (ff.isAbsolute() && QFileInfo::exists(sibling))
         return sibling;
-    const QString onPath = QStandardPaths::findExecutable("ffprobe");
-    return onPath.isEmpty() ? exeName("ffprobe") : onPath;
+    const QString found = findTool(QStringLiteral("ffprobe"));
+    return found.isEmpty() ? exeName("ffprobe") : found;
 }
 
 void setFfmpegPath(const QString &path)
@@ -143,7 +152,7 @@ QString ytDlpPath()
     const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(exeName("yt-dlp"));
     if (QFileInfo::exists(appLocal))
         return appLocal;
-    return QStandardPaths::findExecutable(QStringLiteral("yt-dlp"));
+    return findTool(QStringLiteral("yt-dlp"));
 }
 
 void setYtDlpPath(const QString &path) { setValue("tools/ytdlp", path); }

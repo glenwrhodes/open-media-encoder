@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-16
+
+### Added
+- **Linux version**, released as an AppImage (download, `chmod +x`, run) and a `.tar.gz` for
+  systems without FUSE. FFmpeg 8.0.1 is included, as on Windows. Built on Ubuntu 22.04, so it
+  runs on Ubuntu 22.04, Debian 12, Fedora 36 and newer.
+- **VA-API** hardware encoding on Linux (H.264, HEVC, AV1) for Intel and AMD GPUs. NVENC and Quick
+  Sync also work on Linux.
+- **Apple VideoToolbox** hardware encoding (H.264, HEVC) for the coming macOS version.
+- Linux and macOS integration: keep the computer awake while encoding or recording (systemd-logind
+  / caffeinate), Show in Folder selects the file in the system file manager, and FFmpeg and
+  yt-dlp are also found in Homebrew and `/usr/local` when the app is started from a launcher.
+- Command-line runs on a Linux server without a display work without extra setup.
+- CI builds and tests on Linux and macOS as well as Windows.
+
+### Fixed
+- Stream recordings from YouTube with a time limit now stop at the limit; they ran up to
+  15 seconds over because picture and sound arrive separately. Recordings also start closer to
+  the moment you press Record.
+- The Media Browser opens your home folder when there is no Videos folder.
+
 ## [1.3.0] - 2026-10-16
 
 ### Added
@@ -105,7 +126,8 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.0.0...v1.1.0

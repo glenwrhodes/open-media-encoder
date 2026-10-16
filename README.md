@@ -5,7 +5,7 @@
 <h1 align="center">Open Media Encoder</h1>
 
 <p align="center">
-  <strong>A free, open-source batch media encoder for Windows, built on Qt 6 and FFmpeg.</strong><br>
+  <strong>A free, open-source batch media encoder for Windows and Linux, built on Qt 6 and FFmpeg.</strong><br>
   Queue up your media, pick presets, add LUTs, overlays and loudness normalization, and encode
   to H.264, HEVC, AV1, ProRes, DNxHR and more, with GPU acceleration.
 </p>
@@ -14,7 +14,7 @@
   <a href="https://github.com/glenwrhodes/open-media-encoder/actions/workflows/build.yml"><img alt="Build" src="https://github.com/glenwrhodes/open-media-encoder/actions/workflows/build.yml/badge.svg"></a>
   <a href="https://github.com/glenwrhodes/open-media-encoder/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/glenwrhodes/open-media-encoder?label=download&color=2d8ceb"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
-  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows%2010%2F11%20x64-lightgrey">
+  <img alt="Platforms: Windows and Linux" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey">
   <a href="CONTRIBUTING.md"><img alt="PRs welcome" src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg"></a>
 </p>
 
@@ -32,11 +32,18 @@
 | --- | --- |
 | `OpenMediaEncoder-x.y.z-win64-setup.exe` | You want a normal install with a Start menu entry and an uninstaller. |
 | `OpenMediaEncoder-x.y.z-win64-portable.zip` | You want to unzip and run without installing (USB stick, locked-down PC). |
+| `OpenMediaEncoder-x.y.z-x86_64.AppImage` | You're on Linux: `chmod +x` the file and run it. |
+| `OpenMediaEncoder-x.y.z-linux-x86_64.tar.gz` | You're on Linux without FUSE (some containers): extract and run `open-media-encoder`. |
 
-Everything is included, **FFmpeg too**, so there is nothing else to install. Requires 64-bit
-Windows 10 or 11. GPU encoding needs NVIDIA driver 570 or newer (NVENC), a recent Intel
-graphics driver (Quick Sync) or an AMD driver (AMF). The app detects what your machine supports
-and falls back to software encoding automatically.
+Everything is included, **FFmpeg too**, so there is nothing else to install.
+
+- **Windows:** 64-bit Windows 10 or 11. GPU encoding needs NVIDIA driver 570 or newer (NVENC), a
+  recent Intel graphics driver (Quick Sync) or an AMD driver (AMF).
+- **Linux:** 64-bit x86 with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36, Linux Mint
+  21 or newer). GPU encoding uses VA-API (Intel and AMD with Mesa drivers), NVENC (NVIDIA
+  proprietary driver) or Quick Sync. Runs on X11 and on Wayland through XWayland.
+
+The app detects what your machine supports and falls back to software encoding automatically.
 
 > Windows SmartScreen may warn about a new, unsigned app. Choose **More info → Run anyway**.
 > Every release lists SHA-256 checksums so you can verify the download.
@@ -86,7 +93,7 @@ and falls back to software encoding automatically.
 | --- | --- |
 | Delivery | H.264, HEVC (H.265), AV1, VP9/VP8 (WebM), MPEG-2, AVI, Animated GIF |
 | Mastering | Apple ProRes 422 Proxy → 4444 XQ (with alpha), Avid DNxHR LB → 444, GoPro CineForm, QuickTime Animation, MXF OP1a |
-| GPU encoders | NVIDIA NVENC, Intel Quick Sync, AMD AMF (each tested on your machine at startup) |
+| GPU encoders | NVIDIA NVENC, Intel Quick Sync, AMD AMF, VA-API on Linux, Apple VideoToolbox (each tested on your machine at startup) |
 | Audio | AAC, MP3, WAV, AIFF, FLAC, Opus, AC-3 |
 | Stills | PNG, JPEG, TIFF, DPX, BMP and Targa, as single frames or sequences |
 
@@ -141,6 +148,8 @@ success and `1` if any encode failed.
 
 ## Building from source
 
+### Windows
+
 **Prerequisites:** Windows 10/11 x64, [Qt 6.5+](https://www.qt.io/download-qt-installer) with the
 MinGW 64-bit kit (or MSVC 2022), CMake 3.21+ and Ninja. The Qt online installer can install
 CMake, Ninja and MinGW for you.
@@ -168,6 +177,27 @@ ctest --test-dir build --output-on-failure
 Run these from a *Developer PowerShell for VS 2022*. Qt Creator also opens `CMakeLists.txt` directly.
 </details>
 
+### Linux
+
+**Prerequisites:** Qt 6.5+ (the [Qt online installer](https://www.qt.io/download-qt-installer) or
+`pip install aqtinstall && aqt install-qt linux desktop 6.10.2 linux_gcc_64`), CMake 3.21+, Ninja
+and a C++17 compiler. On Ubuntu/Debian: `sudo apt install build-essential ninja-build libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0`.
+
+```bash
+./scripts/fetch-ffmpeg.sh            # pinned static FFmpeg 8.0.1, verified by SHA-256
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=~/Qt/6.10.2/gcc_64
+cmake --build build
+QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
+./build/OpenMediaEncoder
+./scripts/package-linux.sh build dist   # AppImage and .tar.gz, as released
+```
+
+### macOS
+
+The code builds and the test suite passes on macOS (CI checks every change), but there is no
+signed package yet. To try it: `brew install qt ninja ffmpeg`, then the same CMake commands as
+Linux; the app is `build/Open Media Encoder.app`.
+
 ## How it works
 
 ```
@@ -188,7 +218,9 @@ for a guided tour.
 
 Help is welcome on any of these. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
-- [ ] macOS and Linux builds (the core is portable; packaging and CI need work)
+- [x] Linux builds (AppImage)
+- [ ] macOS package: signed and notarized `.dmg` (the code already builds and passes tests on macOS)
+- [ ] Linux on ARM64 and Flatpak/Flathub packaging
 - [ ] HDR: HDR10 / HLG metadata passthrough and tone mapping
 - [ ] Audio channel mapping and multi-track audio export
 - [ ] Proxy-workflow inputs

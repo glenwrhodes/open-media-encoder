@@ -1,5 +1,6 @@
 #include "EncoderCaps.h"
 
+#include "CommandBuilder.h"
 #include "Formats.h"
 
 #include <QMutexLocker>
@@ -70,10 +71,17 @@ void EncoderCaps::validateHardware(const QString &ffmpegPath)
     QHash<QString, bool> works;
     for (const QString &enc : hw) {
         const VideoCodecDef *def = Formats::videoCodec(enc);
+        const QString pix = def ? def->defaultPixelFormat : QStringLiteral("yuv420p");
+        QStringList args{"-hide_banner", "-v", "error"};
+        args << CommandBuilder::hardwareDeviceArgs(enc) << "-f" << "lavfi" << "-i"
+             << "color=c=black:s=320x240:r=25:d=0.2";
+        if (enc.endsWith(QStringLiteral("_vaapi")))
+            args << "-vf" << QStringLiteral("format=%1,hwupload").arg(pix);
+        else
+            args << "-pix_fmt" << pix;
+        args << "-c:v" << enc << "-f" << "null" << "-";
         QProcess p;
-        p.start(ffmpegPath,
-                {"-hide_banner", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x240:r=25:d=0.2", "-pix_fmt",
-                 def ? def->defaultPixelFormat : QStringLiteral("yuv420p"), "-c:v", enc, "-f", "null", "-"});
+        p.start(ffmpegPath, args);
         bool ok = p.waitForStarted(5000) && p.waitForFinished(15000) && p.exitStatus() == QProcess::NormalExit &&
                   p.exitCode() == 0;
         if (p.state() != QProcess::NotRunning) {

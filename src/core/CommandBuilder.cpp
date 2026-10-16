@@ -18,6 +18,9 @@ namespace {
 bool isNvenc(const QString &c) { return c.endsWith("_nvenc"); }
 bool isQsv(const QString &c) { return c.endsWith("_qsv"); }
 bool isAmf(const QString &c) { return c.endsWith("_amf"); }
+bool isVaapi(const QString &c) { return c.endsWith("_vaapi"); }
+bool isVideoToolbox(const QString &c) { return c.endsWith("_videotoolbox"); }
+bool isHevcHardware(const QString &c) { return c.startsWith("hevc_") && c != "hevc"; }
 bool isHevc(const QString &c) { return c == "libx265" || c.startsWith("hevc_"); }
 
 QString kbps(double mbps) { return QString::number(qMax<qint64>(1, qRound64(mbps * 1000.0))) + "k"; }
@@ -141,6 +144,25 @@ QString framesToTimecode(qint64 frames, int fps)
         .arg(ff, 2, 10, QChar('0'));
 }
 
+QString vaapiDevice()
+{
+#ifdef Q_OS_LINUX
+    const QDir dri(QStringLiteral("/dev/dri"));
+    const QStringList nodes = dri.entryList({QStringLiteral("renderD*")}, QDir::System, QDir::Name);
+    if (!nodes.isEmpty())
+        return dri.filePath(nodes.first());
+#endif
+    return {};
+}
+
+QStringList hardwareDeviceArgs(const QString &codec)
+{
+    if (!isVaapi(codec))
+        return {};
+    const QString dev = vaapiDevice();
+    return {"-vaapi_device", dev.isEmpty() ? QStringLiteral("/dev/dri/renderD128") : dev};
+}
+
 QString findDefaultFont()
 {
     static const QStringList candidates = {"C:/Windows/Fonts/arial.ttf",
@@ -226,7 +248,7 @@ QString resolvePixelFormat(const ExportSettings &s, const MediaInfo &src)
         if (v.profile == "main444-8")
             return QStringLiteral("yuv444p");
     }
-    if ((c == "hevc_nvenc" || c == "hevc_qsv" || c == "hevc_amf") && v.profile == "main10")
+    if (isHevcHardware(c) && v.profile == "main10")
         return QStringLiteral("p010le");
     const VideoCodecDef *def = Formats::videoCodec(c);
     return def ? def->defaultPixelFormat : QString();
@@ -251,7 +273,7 @@ QString resolveProfile(const ExportSettings &s, const QString &pix)
         if (pix == "yuv444p")
             return QStringLiteral("main444-8");
         return QStringLiteral("main");
-    } else if (c == "hevc_nvenc" || c == "hevc_qsv" || c == "hevc_amf") {
+    } else if (isHevcHardware(c)) {
         return pix == "p010le" ? QStringLiteral("main10") : QStringLiteral("main");
     } else if (c == "h264_nvenc" && pix == "yuv444p") {
         return QStringLiteral("high444p");
@@ -519,6 +541,8 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
     } else if (!pix.isEmpty()) {
         chain << QStringLiteral("format=%1").arg(pix);
     }
+    if (isVaapi(v.codec))
+        chain << QStringLiteral("hwupload");
     flush(QStringLiteral("[vout]"));
     return stmts.join(';');
 }
@@ -543,7 +567,7 @@ void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringLi
         a << "-profile:v" << profile;
     if (!v.level.isEmpty() && v.level != "auto" && def && !def->levels.isEmpty())
         a << "-level:v" << v.level;
-    if (!pix.isEmpty())
+    if (!pix.isEmpty() && !isVaapi(c)) // VA-API frames are already uploaded in the encoder's format
         a << "-pix_fmt" << pix;
     if (v.keyframeInterval > 0)
         a << "-g" << QString::number(v.keyframeInterval);
@@ -587,6 +611,20 @@ void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringLi
             if (c == "h264_amf")
                 a << "-qp_b" << Q;
         }
+    } else if (isVaapi(c)) {
+        if (rc == "cbr")
+            a << "-rc_mode" << "CBR" << "-b:v" << T << "-maxrate" << T << "-bufsize" << Tbuf;
+        else if (rc == "vbr1" || rc == "vbr2")
+            a << "-rc_mode" << "VBR" << "-b:v" << T << "-maxrate" << M << "-bufsize" << Mbuf;
+        else if (rc == "quality")
+            a << "-rc_mode" << "CQP" << "-qp" << Q;
+    } else if (isVideoToolbox(c)) {
+        if (rc == "cbr")
+            a << "-b:v" << T << "-maxrate" << T << "-bufsize" << Tbuf;
+        else if (rc == "vbr1" || rc == "vbr2")
+            a << "-b:v" << T << "-maxrate" << M << "-bufsize" << Mbuf;
+        else if (rc == "quality")
+            a << "-q:v" << Q; // Apple silicon only; 1-100, higher is better
     } else if (c == "libaom-av1" || c == "libvpx" || c == "libvpx-vp9") {
         if (rc == "cbr")
             a << "-b:v" << T << "-minrate" << T << "-maxrate" << T;
@@ -743,6 +781,8 @@ BuildResult build(const BuildRequest &req)
     // ---- inputs
     if (req.hwDecode && doVideo && !src.isStill)
         a << "-hwaccel" << "auto";
+    if (doVideo)
+        a << hardwareDeviceArgs(s.video.codec);
     if (req.inputs.size() > 1) {
         const QString list = writeConcatList(req, &r.tempFiles);
         if (list.isEmpty()) {

@@ -120,7 +120,12 @@ private:
     QStringList m_log;
     QString m_command;
     QStringList m_files;
-    QStringList m_toConvert;
+    struct FinishStep {
+        QString file;
+        double keepSeconds = 0; // > 0: trim to this length
+    };
+    QList<FinishStep> m_finishSteps; // MP4 conversion and/or trimming to the time limit
+    QList<double> m_fileSeconds;     // length of each file in m_files
     QString m_partFile;
     int m_part = 0;
     int m_failedAttempts = 0;

@@ -11,6 +11,7 @@
 #include <QProcess>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <QSysInfo>
 
 namespace {
 const QString ReleaseBase = QStringLiteral("https://github.com/yt-dlp/yt-dlp/releases/latest/download/");
@@ -25,7 +26,8 @@ QString releaseAssetName()
 #elif defined(Q_OS_MACOS)
     return QStringLiteral("yt-dlp_macos");
 #else
-    return QStringLiteral("yt-dlp_linux");
+    return QSysInfo::currentCpuArchitecture() == QLatin1String("arm64") ? QStringLiteral("yt-dlp_linux_aarch64")
+                                                                        : QStringLiteral("yt-dlp_linux");
 #endif
 }
 

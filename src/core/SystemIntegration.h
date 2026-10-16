@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QString>
+
 // Operating-system hooks used around long encodes.
 namespace SystemIntegration {
 
@@ -9,5 +11,7 @@ void setPreventSleep(bool on);
 bool sleepComputer();
 // Starts a normal shutdown. Returns false if it could not be requested.
 bool shutDownComputer();
+// Opens the system file manager with `path` selected (or the folder itself when it can't select).
+void revealInFileManager(const QString &path);
 
 } // namespace SystemIntegration

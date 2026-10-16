@@ -47,7 +47,10 @@ cmake --build build-msvc
 ctest --test-dir build-msvc --output-on-failure
 ```
 
-CI builds and tests with both MinGW and MSVC, so please keep both compiling.
+CI builds and tests with both MinGW and MSVC on Windows, on Linux (Ubuntu 22.04) and on macOS, so
+please keep them all compiling. On Linux and macOS, see *Building from source* in the README;
+platform-specific code goes behind `Q_OS_WIN` / `Q_OS_MACOS` / `Q_OS_LINUX` with a working
+fallback for the others (see `SystemIntegration.cpp`).
 
 ## Architecture
 
