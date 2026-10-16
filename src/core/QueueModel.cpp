@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QMimeData>
+#include <QRegularExpression>
 #include <QUrl>
 #include <QUuid>
 #include <algorithm>
@@ -55,6 +56,7 @@ QJsonObject OutputItem::toJson() const
         {"status", int(status)},
         {"message", message},
         {"finalPath", finalPath},
+        {"autoAdded", autoAdded},
     };
 }
 
@@ -70,6 +72,7 @@ OutputItem OutputItem::fromJson(const QJsonObject &o)
     it.status = OutputStatus(o.value("status").toInt());
     it.message = o.value("message").toString();
     it.finalPath = o.value("finalPath").toString();
+    it.autoAdded = o.value("autoAdded").toBool();
     if (it.status == OutputStatus::Encoding || it.status == OutputStatus::Paused)
         it.status = OutputStatus::Ready;
     if (it.status == OutputStatus::Done)
@@ -77,8 +80,20 @@ OutputItem OutputItem::fromJson(const QJsonObject &o)
     return it;
 }
 
+QString SourceItem::outputBasePath() const
+{
+    if (sequence.valid)
+        return QFileInfo(sequence.pattern).dir().filePath(sequence.baseName() + QStringLiteral(".seq"));
+    return files.value(0);
+}
+
 QString SourceItem::displayName() const
 {
+    if (sequence.valid)
+        return QStringLiteral("%1 (%2 frames @ %3 fps)")
+            .arg(sequence.displayName())
+            .arg(sequence.count)
+            .arg(QString::number(sequence.fps, 'f', 3).remove(QRegularExpression("\\.?0+$")));
     if (files.isEmpty())
         return {};
     if (files.size() == 1)
@@ -290,8 +305,7 @@ bool QueueModel::dropMimeData(const QMimeData *data, Qt::DropAction, int, int, c
         if (!p || !parent.isValid())
             return false;
         if (parent.internalId() == 0) {
-            const SourceItem &s = m_sources[parent.row()];
-            addOutput(s.id, p->settings, p->id);
+            applyPresetToSource(m_sources[parent.row()].id, p->id);
         } else {
             const OutputItem &o = m_sources[int(parent.internalId() - 1)].outputs[parent.row()];
             applyPreset(o.id, p->id);
@@ -338,8 +352,8 @@ QString QueueModel::addOutput(const QString &sourceId, const ExportSettings &set
     o.id = newId();
     o.settings = settings;
     o.presetId = presetId;
-    const QString dir = outputDir.isEmpty() ? AppSettings::defaultOutputDir(s.files.value(0)) : outputDir;
-    o.outputPath = CommandBuilder::defaultOutputPath(s.files.value(0), settings, dir);
+    const QString dir = outputDir.isEmpty() ? AppSettings::defaultOutputDir(s.outputBasePath()) : outputDir;
+    o.outputPath = CommandBuilder::defaultOutputPath(s.outputBasePath(), settings, dir);
     beginInsertRows(sidx, s.outputs.size(), s.outputs.size());
     s.outputs << o;
     endInsertRows();
@@ -463,6 +477,44 @@ QString QueueModel::duplicateOutput(const QString &outputId)
     return copy.id;
 }
 
+QString QueueModel::addImageSequence(const ImageSequence &sequence)
+{
+    if (!sequence.valid)
+        return {};
+    const QString id = newId();
+    SourceItem s;
+    s.id = id;
+    s.files = {sequence.pattern};
+    s.sequence = sequence;
+    s.info.path = sequence.pattern;
+    beginInsertRows({}, m_sources.size(), m_sources.size());
+    m_sources << s;
+    endInsertRows();
+    emit sourceAdded(id);
+    emit queueChanged();
+    return id;
+}
+
+QString QueueModel::applyPresetToSource(const QString &sourceId, const QString &presetId)
+{
+    const Preset *p = PresetManager::instance().find(presetId);
+    SourceItem *s = source(sourceId);
+    if (!p || !s)
+        return {};
+    if (s->outputs.size() == 1 && s->outputs.first().autoAdded && s->outputs.first().status == OutputStatus::Ready) {
+        const QString oid = s->outputs.first().id;
+        applyPreset(oid, p->id);
+        return oid;
+    }
+    return addOutput(sourceId, p->settings, p->id);
+}
+
+void QueueModel::setAutoAdded(const QString &outputId, bool autoAdded)
+{
+    if (OutputItem *o = output(outputId))
+        o->autoAdded = autoAdded;
+}
+
 void QueueModel::applyPreset(const QString &outputId, const QString &presetId)
 {
     const Preset *p = PresetManager::instance().find(presetId);
@@ -477,6 +529,7 @@ void QueueModel::setOutputSettings(const QString &outputId, const ExportSettings
     OutputItem *o = output(outputId, &owner);
     if (!o)
         return;
+    o->autoAdded = false;
     const QString oldExt = o->settings.extension();
     const bool oldSeq = o->settings.isImageSequence();
     o->settings = settings;
@@ -506,6 +559,8 @@ void QueueModel::setOutputPath(const QString &outputId, const QString &path)
     OutputItem *o = output(outputId);
     if (!o || path.isEmpty())
         return;
+    if (o->outputPath != path)
+        o->autoAdded = false;
     o->outputPath = path;
     o->finalPath.clear();
     emitOutputChanged(outputId);
@@ -732,10 +787,17 @@ bool QueueModel::save(const QString &path) const
         QJsonArray outs;
         for (const OutputItem &o : s.outputs)
             outs << o.toJson();
-        arr << QJsonObject{{"id", s.id},
-                           {"files", QJsonArray::fromStringList(s.files)},
-                           {"watchFolderId", s.watchFolderId},
-                           {"outputs", outs}};
+        QJsonObject so{{"id", s.id},
+                       {"files", QJsonArray::fromStringList(s.files)},
+                       {"watchFolderId", s.watchFolderId},
+                       {"outputs", outs}};
+        if (s.sequence.valid)
+            so.insert("sequence", QJsonObject{{"pattern", s.sequence.pattern},
+                                              {"firstFile", s.sequence.firstFile},
+                                              {"start", s.sequence.start},
+                                              {"count", s.sequence.count},
+                                              {"fps", s.sequence.fps}});
+        arr << so;
     }
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -763,6 +825,15 @@ bool QueueModel::load(const QString &path)
             continue;
         s.info.path = s.files.first();
         s.watchFolderId = so.value("watchFolderId").toString();
+        const QJsonObject seq = so.value("sequence").toObject();
+        if (!seq.isEmpty()) {
+            s.sequence.pattern = seq.value("pattern").toString();
+            s.sequence.firstFile = seq.value("firstFile").toString();
+            s.sequence.start = seq.value("start").toInt();
+            s.sequence.count = seq.value("count").toInt();
+            s.sequence.fps = seq.value("fps").toDouble(24.0);
+            s.sequence.valid = !s.sequence.pattern.isEmpty();
+        }
         for (const auto &ov : so.value("outputs").toArray())
             s.outputs << OutputItem::fromJson(ov.toObject());
         loaded << s;

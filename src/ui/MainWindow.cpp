@@ -14,6 +14,7 @@
 #include "core/EncoderCaps.h"
 #include "core/EncoderEngine.h"
 #include "core/Formats.h"
+#include "core/ImageSequence.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
 #include "core/SystemIntegration.h"
@@ -39,6 +40,7 @@
 #include <QPlainTextEdit>
 #include <QProcess>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QShortcut>
 #include <QStatusBar>
 #include <QSystemTrayIcon>
@@ -232,6 +234,7 @@ void MainWindow::buildDocks()
     connect(m_media, &MediaBrowser::addToQueueWithPresetRequested, this,
             qOverload<const QStringList &, const QString &>(&MainWindow::addFiles));
     connect(m_media, &MediaBrowser::stitchRequested, this, &MainWindow::stitchFiles);
+    connect(m_media, &MediaBrowser::imageSequenceRequested, this, [this](const QString &f) { addImageSequence(f); });
     connect(m_media, &MediaBrowser::watchFolderRequested, this, [this](const QString &folder) {
         const Preset p = PresetManager::instance().defaultPreset();
         m_watch->addFolder(folder, WatchOutput{p.settings, p.id, {}});
@@ -279,6 +282,8 @@ void MainWindow::buildMenus()
                     &MainWindow::addSourceDialog);
     file->addAction(Theme::icon("folder"), QStringLiteral("Add Folder of Sources…"), this,
                     &MainWindow::addFolderDialog);
+    file->addAction(Theme::icon("image"), QStringLiteral("Add Image Sequence…"),
+                    QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I), this, &MainWindow::imageSequenceDialog);
     file->addAction(Theme::icon("stitch"), QStringLiteral("Stitch Clips Together…"), this, &MainWindow::stitchDialog);
     file->addSeparator();
     file->addAction(Theme::icon("play"), QStringLiteral("Start Queue"), QKeySequence(Qt::CTRL | Qt::Key_Return),
@@ -413,6 +418,7 @@ void MainWindow::probeSource(const QString &sourceId)
     if (!s)
         return;
     const QStringList files = s->files;
+    const QStringList inputArgs = s->inputArgs();
     const QString probe = AppSettings::ffprobePath();
     auto *watcher = new QFutureWatcher<ProbeResult>(this);
     connect(watcher, &QFutureWatcher<ProbeResult>::finished, this, [this, watcher, sourceId] {
@@ -420,9 +426,9 @@ void MainWindow::probeSource(const QString &sourceId)
         m_model->setSourceInfo(sourceId, r.info, r.total);
         watcher->deleteLater();
     });
-    watcher->setFuture(QtConcurrent::run([probe, files] {
+    watcher->setFuture(QtConcurrent::run([probe, files, inputArgs] {
         ProbeResult r;
-        r.info = MediaInfo::probe(probe, files.first());
+        r.info = MediaInfo::probe(probe, files.first(), 20000, inputArgs);
         if (files.size() > 1) {
             r.total = r.info.duration;
             for (int i = 1; i < files.size(); ++i)
@@ -439,11 +445,29 @@ void MainWindow::addFiles(const QStringList &paths, const QString &presetId)
     const QStringList files = expandMediaFiles(paths);
     if (files.isEmpty())
         return;
+    // Several numbered frames of one sequence: offer to treat them as a single video source.
+    ImageSequence seq;
+    if (files.size() >= 2 && ImageSequence::filesFormSequence(files, &seq)) {
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Image Sequence"),
+            QStringLiteral("These %1 images look like a numbered image sequence (%2, %3 frames).\n\n"
+                           "Add them as one video source?")
+                .arg(files.size())
+                .arg(seq.displayName())
+                .arg(seq.count),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (answer == QMessageBox::Yes) {
+            addImageSequence(seq.firstFile);
+            return;
+        }
+    }
     const Preset *chosen = PresetManager::instance().find(presetId);
     const Preset p = chosen ? *chosen : PresetManager::instance().defaultPreset();
     for (const QString &f : files) {
         const QString sid = m_model->addSource({f});
-        m_model->addOutput(sid, p.settings, p.id);
+        const QString oid = m_model->addOutput(sid, p.settings, p.id);
+        // The default output is a placeholder: dropping a preset on the source replaces it.
+        m_model->setAutoAdded(oid, !chosen);
     }
     statusBar()->showMessage(QStringLiteral("Added %1 source%2 with preset \"%3\"")
                                  .arg(files.size())
@@ -488,6 +512,65 @@ void MainWindow::stitchDialog()
         return;
     }
     stitchFiles(files);
+}
+
+void MainWindow::imageSequenceDialog()
+{
+    QStringList exts;
+    for (const QString &e : Formats::mediaFileExtensions())
+        if (Formats::mediaKind("x." + e) == MediaKind::Image)
+            exts << "*." + e;
+    const QString file = QFileDialog::getOpenFileName(this, QStringLiteral("Add Image Sequence — choose any frame"),
+                                                      AppSettings::value("ui/lastAddDir").toString(),
+                                                      QStringLiteral("Images (%1)").arg(exts.join(' ')));
+    if (file.isEmpty())
+        return;
+    AppSettings::setValue("ui/lastAddDir", QFileInfo(file).absolutePath());
+    addImageSequence(file);
+}
+
+bool MainWindow::addImageSequence(const QString &anyFrame, bool askFrameRate)
+{
+    ImageSequence seq = ImageSequence::detect(anyFrame);
+    if (!seq.valid) {
+        QMessageBox::information(this, QStringLiteral("Image Sequence"),
+                                 QStringLiteral("No numbered image sequence was found for %1.\n\nFrames need "
+                                                "consecutive numbers, e.g. shot_0001.png, shot_0002.png, …")
+                                     .arg(QFileInfo(anyFrame).fileName()));
+        return false;
+    }
+    seq.fps = AppSettings::value("sequence/fps", 24.0).toDouble();
+    if (askFrameRate) {
+        const QStringList rates = {"23.976", "24", "25", "29.97", "30", "48", "50", "59.94", "60"};
+        QString current = QString::number(seq.fps, 'f', 3).remove(QRegularExpression("\\.?0+$"));
+        QInputDialog dlg(this);
+        dlg.setWindowTitle(QStringLiteral("Add Image Sequence"));
+        dlg.setLabelText(QStringLiteral("%1\n%2 frames found.\n\nFrame rate:").arg(seq.displayName()).arg(seq.count));
+        dlg.setComboBoxItems(rates);
+        dlg.setComboBoxEditable(true);
+        dlg.setTextValue(current);
+        dlg.setMinimumWidth(420);
+        if (dlg.exec() != QDialog::Accepted)
+            return false;
+        const QString chosen = dlg.textValue();
+        const double fps = chosen.toDouble();
+        if (fps <= 0 || fps > 1000) {
+            QMessageBox::warning(this, QStringLiteral("Image Sequence"), QStringLiteral("Invalid frame rate."));
+            return false;
+        }
+        seq.fps = fps;
+        AppSettings::setValue("sequence/fps", fps);
+    }
+    const Preset p = PresetManager::instance().defaultPreset();
+    const QString sid = m_model->addImageSequence(seq);
+    const QString oid = m_model->addOutput(sid, p.settings, p.id);
+    m_model->setAutoAdded(oid, true);
+    statusBar()->showMessage(QStringLiteral("Added image sequence %1 (%2 frames at %3 fps)")
+                                 .arg(seq.displayName())
+                                 .arg(seq.count)
+                                 .arg(seq.fps),
+                             6000);
+    return true;
 }
 
 void MainWindow::stitchFiles(QStringList files)
@@ -630,6 +713,7 @@ void MainWindow::editOutput(const QString &outputId)
     if (!o)
         return;
     ExportSettingsDialog dlg(ExportSettingsDialog::Mode::Output, o->settings, o->presetId, this);
+    dlg.setInputArgs(src->inputArgs());
     dlg.setSource(src->files, src->info, src->totalDuration);
     dlg.setOutputPath(o->outputPath);
     dlg.setRange(o->inPoint, o->outPoint);
@@ -675,7 +759,7 @@ void MainWindow::applyPreset(const QString &presetId)
     }
     for (const QModelIndex &i : rows) {
         if (i.data(QueueModel::IsSourceRole).toBool())
-            m_model->addOutput(i.data(QueueModel::IdRole).toString(), p->settings, p->id);
+            m_model->applyPresetToSource(i.data(QueueModel::IdRole).toString(), p->id);
         else
             m_model->applyPreset(i.data(QueueModel::IdRole).toString(), p->id);
     }

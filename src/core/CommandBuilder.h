@@ -18,6 +18,7 @@ struct BuildRequest {
     bool hwDecode = false;
     QString workDir;        // where helper files (text, concat lists) are written
     QString ffmpegFontFile; // optional override for overlay text font
+    QStringList inputArgs;  // extra demuxer options before the main -i (e.g. image sequence rate)
 };
 
 struct BuildResult {
@@ -43,6 +44,8 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
 
 QString escapeFilterValue(const QString &value);
 QString fpsToRational(double fps);
+// True when both paths name the same file (works for files that don't exist yet).
+bool samePath(const QString &a, const QString &b);
 QString defaultOutputPath(const QString &sourcePath, const ExportSettings &s, const QString &outputDir);
 QString uniqueOutputPath(const QString &path);
 QString firstSequenceFile(const QString &pattern);

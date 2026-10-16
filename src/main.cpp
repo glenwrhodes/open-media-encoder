@@ -2,6 +2,7 @@
 #include "core/EncoderCaps.h"
 #include "core/EncoderEngine.h"
 #include "core/Formats.h"
+#include "core/ImageSequence.h"
 #include "core/MediaInfo.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
@@ -125,8 +126,20 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
         for (const QString &i : inputs)
             sources << QStringList{QFileInfo(i).absoluteFilePath()};
 
+    const bool asSequence = parser.isSet("sequence");
+    const double sequenceFps = parser.isSet("fps") ? parser.value("fps").toDouble() : 24.0;
     for (const QStringList &files : sources) {
-        MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), files.first());
+        ImageSequence seq;
+        if (asSequence) {
+            seq = ImageSequence::detect(files.first());
+            if (!seq.valid) {
+                err << files.first() << ": not part of a numbered image sequence\n";
+                return 2;
+            }
+            seq.fps = sequenceFps > 0 ? sequenceFps : 24.0;
+        }
+        MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), seq.valid ? seq.pattern : files.first(), 20000,
+                                          seq.valid ? seq.inputArgs() : QStringList());
         if (!info.valid) {
             err << files.first() << ": " << info.error << "\n";
             return 1;
@@ -137,7 +150,7 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
             for (int i = 1; i < files.size(); ++i)
                 total += MediaInfo::probe(AppSettings::ffprobePath(), files[i]).duration;
         }
-        const QString sid = model.addSource(files);
+        const QString sid = seq.valid ? model.addImageSequence(seq) : model.addSource(files);
         model.setSourceInfo(sid, info, total);
         QString dir;
         if (!outArg.isEmpty() && (sources.size() > 1 || QFileInfo(outArg).isDir()))
@@ -200,6 +213,8 @@ int main(int argc, char *argv[])
     parser.addOption({"in", QStringLiteral("Source in point in seconds."), "seconds"});
     parser.addOption({"out", QStringLiteral("Source out point in seconds."), "seconds"});
     parser.addOption({"stitch", QStringLiteral("Stitch all inputs together into one output.")});
+    parser.addOption({"sequence", QStringLiteral("Treat each input image as a frame of a numbered image sequence.")});
+    parser.addOption({"fps", QStringLiteral("Frame rate for --sequence inputs (default 24)."), "rate"});
     parser.addOption({"list-presets", QStringLiteral("List available preset ids and exit.")});
     parser.addPositionalArgument(QStringLiteral("files"), QStringLiteral("Media files to add to the queue."),
                                  "[files...]");

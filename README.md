@@ -48,6 +48,8 @@ and falls back to software encoding automatically.
 - Drag files in from Explorer or the built-in Media Browser; drag presets onto sources.
 - Start, pause (suspends the encoder), resume and stop. Run encodes in parallel. The queue is restored on the next launch.
 - Stitch clips together into one output, or turn a still image into a video.
+- Convert **image sequences** (PNG, EXR, DPX, TIFF, JPEG, …) to any format: pick any frame and the
+  whole numbered sequence is detected. Alpha is kept for ProRes 4444 and similar.
 - Reorder sources to set priority (Ctrl+Up / Ctrl+Down).
 - Overall progress and time remaining appear in the status bar and on the Windows taskbar button.
 - The computer stays awake while encoding, and can optionally sleep or shut down when the queue finishes.
@@ -66,7 +68,8 @@ and falls back to software encoding automatically.
 
 <img src="docs/images/export-settings.png" alt="Export Settings dialog with live output preview showing a text overlay and burned-in timecode" width="100%">
 
-- Source/Output preview rendered through the real filter graph, plus in/out range and crop.
+- Source/Output preview rendered through the real filter graph. Set In/Out (I/O keys) and crop on
+  the Source tab; the Output tab scrubs exactly the range that will be encoded.
 - Frame size with fit, fill or stretch scaling; frame-rate conversion (sampling, blending, optical flow); field order and deinterlacing.
 - Codec controls: speed preset, profile, level, pixel format, CBR / VBR 1-pass / VBR 2-pass / constant quality, keyframe distance.
 - Audio codec, sample rate, channels and bitrate, plus an estimated file size and the exact FFmpeg command it will run.
@@ -87,9 +90,13 @@ and falls back to software encoding automatically.
 | Audio | AAC, MP3, WAV, AIFF, FLAC, Opus, AC-3 |
 | Stills | PNG, JPEG, TIFF, DPX, BMP and Targa, as single frames or sequences |
 
-About 90 built-in presets cover YouTube, Vimeo, Facebook, Twitter, vertical and square social
-formats, ProRes/DNxHR mastering and GPU encoding. You can save, import and share your own presets
-as JSON files.
+**Web & Social presets** for YouTube (4K to 480p, Shorts), Vimeo, TikTok, Instagram (Reels,
+Stories, feed), Facebook, X, LinkedIn, Snapchat and Pinterest follow each platform's recommended
+settings. Drag a movie into the queue, drop "YouTube 720p HD" on it, and press Start. Vertical
+presets crop landscape footage to fill, and bitrates rise automatically for 60 fps sources.
+
+Altogether there are 120+ presets, including ProRes/DNxHR mastering and GPU encoding. You can
+save, import and share your own presets as JSON files.
 
 **Automation**
 - **Watch folders:** drop files into a folder and they are encoded automatically into `Output/`, and the source moves to `Source/`.
@@ -104,6 +111,7 @@ OpenMediaEncoder.exe --preset "H.264/YouTube 1080p HD" -o out.mp4 input.mov
 OpenMediaEncoder.exe --preset "sys/quicktime/Apple ProRes 422 HQ" -o D:\masters clip1.mp4 clip2.mp4
 OpenMediaEncoder.exe --preset "HEVC/HD 1080p" --in 10 --out 25 -o excerpt.mp4 input.mov
 OpenMediaEncoder.exe --preset "H.264/Match Source - High bitrate" --stitch -o reel.mp4 a.mov b.mov c.mov
+OpenMediaEncoder.exe --preset "TikTok 1080x1920" --sequence --fps 30 -o title.mp4 renders\title_0001.png
 ```
 
 Run with no `--preset` to open the app with the given files queued. The exit code is `0` on

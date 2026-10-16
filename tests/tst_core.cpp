@@ -3,6 +3,7 @@
 #include "core/EncoderCaps.h"
 #include "core/EncoderEngine.h"
 #include "core/Formats.h"
+#include "core/ImageSequence.h"
 #include "core/MediaFileModel.h"
 #include "core/MediaInfo.h"
 #include "core/MediaInfoCache.h"
@@ -44,6 +45,11 @@ private slots:
     void mediaFileModelListsAndSorts();
     void mediaFileModelMetadataColumns();
     void queueReorder();
+    void imageSequenceDetection();
+    void imageSequenceEncode();
+    void presetReplacesAutoOutput();
+    void frameRateLimitAndBitrateScaling();
+    void platformPresetsPresent();
 
 private:
     bool runFfmpeg(const QStringList &args, QString *err = nullptr, int timeoutMs = 180000);
@@ -187,6 +193,11 @@ void CoreTests::uniquePath()
     QVERIFY(f.open(QIODevice::WriteOnly));
     f.close();
     QCOMPARE(CommandBuilder::uniqueOutputPath(p), m_dir.filePath("dup_1.mp4"));
+
+    // samePath must not treat two different missing files as the same file.
+    QVERIFY(!CommandBuilder::samePath(m_dir.filePath("missing_a.mp4"), m_dir.filePath("missing_b.mp4")));
+    QVERIFY(CommandBuilder::samePath(m_dir.filePath("missing_a.mp4"), m_dir.filePath("sub/../missing_a.mp4")));
+    QVERIFY(CommandBuilder::samePath(p, p));
 
     // Default output never points at the source file.
     ExportSettings s;
@@ -627,6 +638,233 @@ void CoreTests::queueReorder()
     QCOMPARE(model.sources().at(2).id, c);
     QCOMPARE(persistentOut.data(QueueModel::IdRole).toString(), outC);
     QVERIFY(!model.moveSource(c, 2)); // no-op
+}
+
+void CoreTests::imageSequenceDetection()
+{
+    const QString dir = m_dir.filePath("seqdetect");
+    QDir().mkpath(dir);
+    auto touch = [&](const QString &name) {
+        QFile f(QDir(dir).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("x");
+    };
+    for (int i = 1; i <= 12; ++i)
+        touch(QStringLiteral("shot_%1.png").arg(i, 4, 10, QChar('0')));
+    // A gap: 14..16 is a separate run.
+    for (int i = 14; i <= 16; ++i)
+        touch(QStringLiteral("shot_%1.png").arg(i, 4, 10, QChar('0')));
+    touch("shot_0003.jpg"); // different extension, ignored
+    for (int i = 8; i <= 11; ++i)
+        touch(QStringLiteral("frame%1.tif").arg(i)); // unpadded, crosses 9 -> 10
+
+    ImageSequence a = ImageSequence::detect(QDir(dir).filePath("shot_0005.png"));
+    QVERIFY(a.valid);
+    QCOMPARE(a.start, 1);
+    QCOMPARE(a.count, 12);
+    QVERIFY(a.pattern.endsWith("shot_%04d.png"));
+    QCOMPARE(a.baseName(), QString("shot"));
+    QCOMPARE(a.displayName(), QString("shot_[0001-0012].png"));
+
+    ImageSequence b = ImageSequence::detect(QDir(dir).filePath("shot_0015.png"));
+    QVERIFY(b.valid);
+    QCOMPARE(b.start, 14);
+    QCOMPARE(b.count, 3);
+
+    ImageSequence c = ImageSequence::detect(QDir(dir).filePath("frame9.tif"));
+    QVERIFY(c.valid);
+    QVERIFY(c.pattern.endsWith("frame%d.tif"));
+    QCOMPARE(c.start, 8);
+    QCOMPARE(c.count, 4);
+
+    QVERIFY(!ImageSequence::detect(QDir(dir).filePath("shot_0003.jpg")).valid); // single frame
+    QVERIFY(
+        ImageSequence::filesFormSequence({QDir(dir).filePath("shot_0002.png"), QDir(dir).filePath("shot_0001.png")}));
+    QVERIFY(
+        !ImageSequence::filesFormSequence({QDir(dir).filePath("shot_0002.png"), QDir(dir).filePath("shot_0015.png")}));
+    QVERIFY(!ImageSequence::filesFormSequence({m_clip, m_clip2}));
+}
+
+void CoreTests::imageSequenceEncode()
+{
+    const QString dir = m_dir.filePath("seqencode");
+    QDir().mkpath(dir);
+    QString err;
+    // 30 RGBA frames numbered from 101.
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=1,format=rgba", "-frames:v", "30",
+                        "-start_number", "101", QDir(dir).filePath("render_%04d.png")},
+                       &err),
+             qPrintable(err));
+    ImageSequence seq = ImageSequence::detect(QDir(dir).filePath("render_0110.png"));
+    QVERIFY(seq.valid);
+    QCOMPARE(seq.start, 101);
+    QCOMPARE(seq.count, 30);
+    seq.fps = 24;
+
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), seq.pattern, 20000, seq.inputArgs());
+    QVERIFY2(info.valid, qPrintable(info.error));
+    QVERIFY(!info.isStill);
+    QVERIFY(info.hasAlpha());
+    QVERIFY2(qAbs(info.duration - 1.25) < 0.05, qPrintable(QString::number(info.duration)));
+
+    QueueModel model;
+    const QString sid = model.addImageSequence(seq);
+    model.setSourceInfo(sid, info, 0);
+    const SourceItem *src = model.source(sid);
+    QVERIFY(src->displayName().contains("render_[0101-0130].png"));
+    ExportSettings h264;
+    h264.setFormat("h264");
+    const QString oid = model.addOutput(sid, h264, {}, m_dir.filePath("seqout"));
+    QCOMPARE(QFileInfo(model.output(oid)->outputPath).fileName(), QString("render.mp4"));
+
+    // Encode to H.264 and to ProRes 4444 (alpha must survive).
+    for (const QString &fmt : {QString("h264"), QString("quicktime")}) {
+        ExportSettings s;
+        s.setFormat(fmt);
+        if (fmt == "quicktime") {
+            s.video.profile = "4";
+            s.audio.enabled = false;
+        }
+        BuildRequest req;
+        req.inputs = src->files;
+        req.inputArgs = src->inputArgs();
+        req.source = info;
+        req.settings = s;
+        req.outputPath = m_dir.filePath(QStringLiteral("seqout/render_%1.%2").arg(fmt, s.extension()));
+        req.workDir = m_dir.filePath("work");
+        QDir().mkpath(m_dir.filePath("seqout"));
+        const BuildResult r = CommandBuilder::build(req);
+        QVERIFY2(r.ok(), qPrintable(r.error));
+        QVERIFY2(runFfmpeg(r.args, &err), qPrintable(r.args.join(' ') + "\n" + err));
+        const MediaInfo o = MediaInfo::probe(AppSettings::ffprobePath(), req.outputPath);
+        QVERIFY2(qAbs(o.duration - 1.25) < 0.1, qPrintable(QString::number(o.duration)));
+        QVERIFY(qAbs(o.fps - 24.0) < 0.01);
+        if (fmt == "quicktime")
+            QVERIFY2(o.pixFmt.startsWith("yuva444p"), qPrintable(o.pixFmt)); // alpha kept
+    }
+
+    // Preview frame grab from the middle of the sequence.
+    BuildRequest preq;
+    preq.inputs = src->files;
+    preq.inputArgs = src->inputArgs();
+    preq.source = info;
+    preq.settings = h264;
+    preq.workDir = m_dir.filePath("work");
+    const QString bmp = m_dir.filePath("seqpreview.bmp");
+    const BuildResult pr = CommandBuilder::buildPreview(preq, 0.6, bmp, true);
+    QVERIFY2(runFfmpeg(pr.args, &err), qPrintable(pr.args.join(' ') + "\n" + err));
+    QCOMPARE(QImage(bmp).width(), 640);
+
+    // Queue persistence keeps the sequence.
+    const QString qfile = m_dir.filePath("seqqueue.json");
+    QVERIFY(model.save(qfile));
+    QueueModel other;
+    QVERIFY(other.load(qfile));
+    QVERIFY(other.sources().first().sequence.valid);
+    QCOMPARE(other.sources().first().sequence.start, 101);
+    QCOMPARE(other.sources().first().inputArgs(), seq.inputArgs());
+}
+
+void CoreTests::presetReplacesAutoOutput()
+{
+    QueueModel model;
+    const QString sid = model.addSource({m_clip});
+    const Preset def = PresetManager::instance().defaultPreset();
+    const QString auto1 = model.addOutput(sid, def.settings, def.id);
+    model.setAutoAdded(auto1, true);
+
+    // First preset replaces the placeholder output...
+    const QString yt = "sys/h264/YouTube 720p HD";
+    QVERIFY(PresetManager::instance().find(yt));
+    QCOMPARE(model.applyPresetToSource(sid, yt), auto1);
+    QCOMPARE(model.source(sid)->outputs.size(), 1);
+    QCOMPARE(model.output(auto1)->settings.video.width, 1280);
+    QVERIFY(!model.output(auto1)->autoAdded);
+    // ...later ones add outputs.
+    const QString second = model.applyPresetToSource(sid, "sys/h264/TikTok 1080x1920");
+    QVERIFY(second != auto1);
+    QCOMPARE(model.source(sid)->outputs.size(), 2);
+
+    // Dropping a preset onto a source row does the same.
+    const QString sid2 = model.addSource({m_clip2});
+    const QString auto2 = model.addOutput(sid2, def.settings, def.id);
+    model.setAutoAdded(auto2, true);
+    QMimeData mime;
+    mime.setData(PresetManager::MimeType, QByteArray("sys/h264/Vimeo 1080p HD"));
+    QVERIFY(model.dropMimeData(&mime, Qt::CopyAction, -1, -1, model.indexForSource(sid2)));
+    QCOMPARE(model.source(sid2)->outputs.size(), 1);
+    QCOMPARE(model.output(auto2)->settings.presetName, QString("Vimeo 1080p HD"));
+}
+
+void CoreTests::frameRateLimitAndBitrateScaling()
+{
+    QString err;
+    const QString fast = m_dir.filePath("fast120.mp4");
+    const QString sixty = m_dir.filePath("sixty.mp4");
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=120:d=0.5", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-pix_fmt", "yuv420p", fast},
+                       &err),
+             qPrintable(err));
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=60:d=0.5", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-pix_fmt", "yuv420p", sixty},
+                       &err),
+             qPrintable(err));
+    const ExportSettings yt = PresetManager::instance().find("sys/h264/YouTube 1080p HD")->settings;
+    QCOMPARE(yt.group, QString("YouTube"));
+    QCOMPARE(yt.video.frameRateLimit, 60.0);
+
+    auto argsFor = [&](const QString &file, MediaInfo *infoOut) {
+        BuildRequest req;
+        req.inputs = {file};
+        req.source = MediaInfo::probe(AppSettings::ffprobePath(), file);
+        req.settings = yt;
+        req.outputPath = m_dir.filePath("limit_" + QFileInfo(file).completeBaseName() + ".mp4");
+        req.workDir = m_dir.filePath("work");
+        *infoOut = req.source;
+        return CommandBuilder::build(req);
+    };
+    MediaInfo info;
+    // 29.97 fps source: no conversion, base bitrate.
+    BuildResult r = argsFor(m_clip, &info);
+    QVERIFY(!r.args.at(r.args.indexOf("-filter_complex") + 1).contains("fps="));
+    QCOMPARE(r.args.at(r.args.indexOf("-b:v") + 1), QString("16000k"));
+    // 60 fps source: kept at 60, bitrate raised 1.5x.
+    r = argsFor(sixty, &info);
+    QVERIFY(!r.args.at(r.args.indexOf("-filter_complex") + 1).contains("fps="));
+    QCOMPARE(r.args.at(r.args.indexOf("-b:v") + 1), QString("24000k"));
+    // 120 fps source: converted down to 60.
+    r = argsFor(fast, &info);
+    QVERIFY(r.args.at(r.args.indexOf("-filter_complex") + 1).contains("fps=60"));
+    QVERIFY2(runFfmpeg(r.args, &err), qPrintable(err));
+    const MediaInfo out = MediaInfo::probe(AppSettings::ffprobePath(), m_dir.filePath("limit_fast120.mp4"));
+    QVERIFY(qAbs(out.fps - 60.0) < 0.01);
+    QCOMPARE(out.width, 1920);
+}
+
+void CoreTests::platformPresetsPresent()
+{
+    const QStringList expected = {"sys/h264/YouTube 2160p 4K",
+                                  "sys/h264/YouTube 1440p 2K",
+                                  "sys/h264/YouTube 1080p HD",
+                                  "sys/h264/YouTube 720p HD",
+                                  "sys/h264/YouTube Shorts 1080x1920",
+                                  "sys/h264/Vimeo 2160p 4K",
+                                  "sys/h264/TikTok 1080x1920",
+                                  "sys/h264/Instagram Reels 1080x1920",
+                                  "sys/h264/Instagram Feed Square 1080x1080",
+                                  "sys/h264/Facebook 1080p HD",
+                                  "sys/h264/Twitter 1080p HD",
+                                  "sys/h264/LinkedIn 1080p HD",
+                                  "sys/h264/Snapchat Spotlight & Stories 1080x1920",
+                                  "sys/h264/Pinterest Standard 1000x1500"};
+    for (const QString &id : expected) {
+        const Preset *p = PresetManager::instance().find(id);
+        QVERIFY2(p, qPrintable(id));
+        QVERIFY2(!p->settings.group.isEmpty(), qPrintable(id));
+    }
+    const ExportSettings tiktok = PresetManager::instance().find("sys/h264/TikTok 1080x1920")->settings;
+    QCOMPARE(tiktok.video.scaleMode, QString("fill"));
+    QCOMPARE(tiktok.video.height, 1920);
 }
 
 QTEST_GUILESS_MAIN(CoreTests)

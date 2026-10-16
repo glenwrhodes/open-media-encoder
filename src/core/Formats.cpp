@@ -433,7 +433,8 @@ QList<AudioCodecDef> buildAudioCodecs()
 {
     const QList<int> pcmRates = {32000, 44100, 48000, 88200, 96000, 192000};
     QList<AudioCodecDef> l;
-    l << makeAudio("aac", "AAC", false, {64, 96, 128, 160, 192, 256, 320}, 320, {32000, 44100, 48000, 88200, 96000}, 8);
+    l << makeAudio("aac", "AAC", false, {64, 96, 128, 160, 192, 256, 320, 384}, 320,
+                   {32000, 44100, 48000, 88200, 96000}, 8);
     l << makeAudio("libmp3lame", "MP3", false, {96, 128, 160, 192, 224, 256, 320}, 320, {32000, 44100, 48000}, 2);
     l << makeAudio("libopus", "Opus", false, {64, 96, 128, 160, 192, 256, 320, 384, 510}, 192, {48000}, 8);
     l << makeAudio("libvorbis", "Vorbis", false, {96, 128, 160, 192, 256, 320}, 256, {44100, 48000}, 8);

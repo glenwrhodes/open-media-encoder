@@ -114,75 +114,101 @@ void PresetManager::buildSystemPresets()
         frame(s, 1280, 720);
         bitrate(s, 10, 12);
         add(s);
-        s = base("h264", "YouTube 2160p 4K");
-        frame(s, 3840, 2160);
-        bitrate(s, 40, 48);
-        s.video.keyframeInterval = 0;
-        add(s);
-        s = base("h264", "YouTube 1080p HD");
-        frame(s, 1920, 1080);
-        bitrate(s, 16, 20);
-        add(s);
-        s = base("h264", "YouTube 720p HD");
-        frame(s, 1280, 720);
-        bitrate(s, 8, 10);
-        add(s);
-        s = base("h264", "YouTube 480p SD Wide");
-        frame(s, 854, 480);
-        bitrate(s, 2.5, 4);
-        s.audio.bitrate = 192;
-        add(s);
-        s = base("h264", "Vimeo 2160p 4K");
-        frame(s, 3840, 2160);
-        bitrate(s, 30, 40);
-        add(s);
-        s = base("h264", "Vimeo 1080p HD");
-        frame(s, 1920, 1080);
-        bitrate(s, 10, 12);
-        add(s);
-        s = base("h264", "Vimeo 720p HD");
-        frame(s, 1280, 720);
-        bitrate(s, 5, 6);
-        add(s);
-        s = base("h264", "Facebook 1080p HD");
-        frame(s, 1920, 1080);
-        bitrate(s, 8, 10);
-        s.audio.bitrate = 192;
-        add(s);
-        s = base("h264", "Facebook 720p HD");
-        frame(s, 1280, 720);
-        bitrate(s, 4, 5);
-        s.audio.bitrate = 192;
-        add(s);
-        s = base("h264", "Twitter 1080p HD");
-        frame(s, 1920, 1080);
-        bitrate(s, 8, 10);
-        s.audio.bitrate = 192;
-        add(s);
-        s = base("h264", "Twitter 720p HD");
-        frame(s, 1280, 720);
-        bitrate(s, 5, 6);
-        s.audio.bitrate = 192;
-        add(s);
-        s = base("h264", "Twitter 640x640");
-        frame(s, 640, 640, 0, "fill");
-        bitrate(s, 2, 3);
-        s.audio.bitrate = 128;
-        add(s);
-        s = base("h264", "Vertical 9x16 1080x1920");
-        frame(s, 1080, 1920, 0, "fill");
-        bitrate(s, 12, 16);
-        add(s);
-        s = base("h264", "Square 1x1 1080x1080");
-        frame(s, 1080, 1080, 0, "fill");
-        bitrate(s, 10, 12);
-        add(s);
         s = base("h264", "Low Resolution Proxy 1280x720");
         frame(s, 1280, 720);
         s.video.rateControl = "quality";
         s.video.quality = 28;
         s.video.speedPreset = "veryfast";
         s.audio.bitrate = 128;
+        add(s);
+    }
+    // ---------------- Web & social platforms (H.264 + AAC, the most widely accepted upload format)
+    {
+        struct Web {
+            const char *group;
+            const char *name;
+            int width;
+            int height;
+            const char *scale; // fit = letterbox, fill = crop to fill the frame
+            double target;     // Mbps at <= 30 fps; raised 1.5x above 30 fps
+            double max;
+            int audioKbps;
+            const char *comment;
+        };
+        static const Web web[] = {
+            {"YouTube", "YouTube 2160p 4K", 3840, 2160, "fit", 45, 54, 384,
+             "YouTube recommended upload settings for 4K."},
+            {"YouTube", "YouTube 1440p 2K", 2560, 1440, "fit", 24, 30, 384,
+             "YouTube recommended upload settings for 1440p."},
+            {"YouTube", "YouTube 1080p HD", 1920, 1080, "fit", 16, 20, 384,
+             "YouTube recommended upload settings for 1080p."},
+            {"YouTube", "YouTube 720p HD", 1280, 720, "fit", 8, 10, 384,
+             "YouTube recommended upload settings for 720p."},
+            {"YouTube", "YouTube 480p SD Wide", 854, 480, "fit", 4, 5, 192, "Small 16:9 upload."},
+            {"YouTube", "YouTube Shorts 1080x1920", 1080, 1920, "fill", 12, 16, 384,
+             "Vertical 9:16 Short. Landscape sources are cropped to fill; Shorts can be up to 3 minutes."},
+            {"Vimeo", "Vimeo 2160p 4K", 3840, 2160, "fit", 40, 50, 320, "Vimeo 4K upload."},
+            {"Vimeo", "Vimeo 1080p HD", 1920, 1080, "fit", 20, 24, 320, "Vimeo 1080p upload."},
+            {"Vimeo", "Vimeo 720p HD", 1280, 720, "fit", 10, 12, 320, "Vimeo 720p upload."},
+            {"Vimeo", "Vimeo Vertical 1080x1920", 1080, 1920, "fill", 16, 20, 320, "Vertical 9:16 for Vimeo."},
+            {"TikTok", "TikTok 1080x1920", 1080, 1920, "fill", 12, 16, 256,
+             "Vertical 9:16, the TikTok standard. Landscape sources are cropped to fill."},
+            {"TikTok", "TikTok 720x1280", 720, 1280, "fill", 6, 8, 192, "Smaller vertical upload for TikTok."},
+            {"TikTok", "TikTok Landscape 1920x1080", 1920, 1080, "fit", 12, 16, 256, "16:9 video for TikTok."},
+            {"Instagram", "Instagram Reels 1080x1920", 1080, 1920, "fill", 12, 16, 256,
+             "Vertical 9:16 Reel. Landscape sources are cropped to fill."},
+            {"Instagram", "Instagram Stories 1080x1920", 1080, 1920, "fill", 10, 12, 256, "Vertical 9:16 Story."},
+            {"Instagram", "Instagram Feed Portrait 1080x1350", 1080, 1350, "fill", 10, 12, 256, "4:5 feed post."},
+            {"Instagram", "Instagram Feed Square 1080x1080", 1080, 1080, "fill", 10, 12, 256, "1:1 feed post."},
+            {"Instagram", "Instagram Feed Landscape 1080x566", 1080, 566, "fill", 8, 10, 256, "1.91:1 feed post."},
+            {"Facebook", "Facebook 1080p HD", 1920, 1080, "fit", 12, 16, 256, "Facebook feed video, 16:9."},
+            {"Facebook", "Facebook 720p HD", 1280, 720, "fit", 6, 8, 192, "Smaller Facebook feed video."},
+            {"Facebook", "Facebook Reels & Stories 1080x1920", 1080, 1920, "fill", 12, 16, 256, "Vertical 9:16."},
+            {"Facebook", "Facebook Feed Portrait 1080x1350", 1080, 1350, "fill", 10, 12, 256, "4:5 feed post."},
+            {"Facebook", "Facebook Feed Square 1080x1080", 1080, 1080, "fill", 10, 12, 256, "1:1 feed post."},
+            {"X (Twitter)", "Twitter 1080p HD", 1920, 1080, "fit", 12, 16, 256,
+             "X/Twitter 16:9. Most accounts allow up to 512 MB and 2:20."},
+            {"X (Twitter)", "Twitter 720p HD", 1280, 720, "fit", 6, 8, 192, "Smaller X/Twitter upload."},
+            {"X (Twitter)", "Twitter Vertical 1080x1920", 1080, 1920, "fill", 10, 12, 256,
+             "Vertical 9:16 for X/Twitter."},
+            {"X (Twitter)", "Twitter 640x640", 640, 640, "fill", 3, 4, 128, "Small square video."},
+            {"LinkedIn", "LinkedIn 1080p HD", 1920, 1080, "fit", 10, 12, 256, "LinkedIn 16:9 video."},
+            {"LinkedIn", "LinkedIn Square 1080x1080", 1080, 1080, "fill", 8, 10, 256, "1:1 LinkedIn post."},
+            {"LinkedIn", "LinkedIn Vertical 1080x1920", 1080, 1920, "fill", 10, 12, 256, "Vertical 9:16 for LinkedIn."},
+            {"Snapchat", "Snapchat Spotlight & Stories 1080x1920", 1080, 1920, "fill", 10, 12, 256, "Vertical 9:16."},
+            {"Pinterest", "Pinterest Standard 1000x1500", 1000, 1500, "fill", 8, 10, 256, "2:3 Pin."},
+            {"Pinterest", "Pinterest Square 1000x1000", 1000, 1000, "fill", 8, 10, 256, "1:1 Pin."},
+            {"Pinterest", "Pinterest Vertical 1080x1920", 1080, 1920, "fill", 10, 12, 256, "9:16 Pin."},
+            {"Social (Generic)", "Vertical 9x16 1080x1920", 1080, 1920, "fill", 12, 16, 256,
+             "Any vertical platform. Landscape sources are cropped to fill."},
+            {"Social (Generic)", "Portrait 4x5 1080x1350", 1080, 1350, "fill", 10, 12, 256, "Any 4:5 feed."},
+            {"Social (Generic)", "Square 1x1 1080x1080", 1080, 1080, "fill", 10, 12, 256, "Any square feed."},
+        };
+        for (const Web &w : web) {
+            auto s = base("h264", QString::fromUtf8(w.name));
+            s.group = QString::fromUtf8(w.group);
+            s.comment = QString::fromUtf8(w.comment);
+            frame(s, w.width, w.height, 0, QString::fromLatin1(w.scale));
+            bitrate(s, w.target, w.max);
+            s.video.profile = "high";
+            s.video.frameRateLimit = 60; // platforms don't accept higher rates
+            s.video.scaleBitrateWithFps = true;
+            s.audio.bitrate = w.audioKbps;
+            s.audio.sampleRate = 48000;
+            s.audio.channels = 2;
+            add(s);
+        }
+        // A smaller-file 4K option for YouTube, on the GPU when available.
+        const QString hevc = firstHardware({"hevc_nvenc", "hevc_qsv", "hevc_amf"});
+        auto s = hevc.isEmpty() ? base("hevc", "YouTube 2160p 4K HEVC")
+                                : withCodec(base("hevc", "YouTube 2160p 4K HEVC"), hevc);
+        s.group = "YouTube";
+        s.comment = "4K in HEVC: about half the file size of H.264 at similar quality.";
+        frame(s, 3840, 2160);
+        bitrate(s, 30, 36);
+        s.video.frameRateLimit = 60;
+        s.video.scaleBitrateWithFps = true;
+        s.audio.bitrate = 320;
         add(s);
     }
     // ---------------- HEVC

@@ -81,6 +81,7 @@ void EncodingPanel::onTaskStarted(const QString &sourceId, const QString &output
         });
         BuildRequest req;
         req.inputs = {src->files.first()};
+        req.inputArgs = src->inputArgs();
         req.source = src->info;
         req.settings = out->settings;
         const double t = out->inPoint > 0 ? out->inPoint : src->info.duration * 0.1;

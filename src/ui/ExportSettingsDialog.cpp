@@ -3,6 +3,7 @@
 #include "FrameGrabber.h"
 #include "FramePreview.h"
 #include "Theme.h"
+#include "TimelineSlider.h"
 #include "core/AppSettings.h"
 #include "core/CommandBuilder.h"
 #include "core/EncoderCaps.h"
@@ -28,6 +29,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QSlider>
 #include <QSpinBox>
 #include <QSplitter>
@@ -177,24 +179,27 @@ QWidget *ExportSettingsDialog::buildPreviewSide()
     m_viewTabs->addTab(QStringLiteral("Source"));
     m_viewTabs->addTab(QStringLiteral("Output"));
     m_viewTabs->setCurrentIndex(1);
-    connect(m_viewTabs, &QTabBar::currentChanged, this, [this] { updateDerived(); });
+    m_viewTabs->setTabToolTip(0, QStringLiteral("The full source clip. Set In and Out points here."));
+    m_viewTabs->setTabToolTip(1, QStringLiteral("What will be encoded: only the In-Out range, with effects applied."));
+    connect(m_viewTabs, &QTabBar::currentChanged, this, [this] {
+        syncTimeline();
+        updateDerived();
+    });
     v->addWidget(m_viewTabs);
 
     m_preview = new FramePreview;
     v->addWidget(m_preview, 1);
 
     auto *timeRow = new QHBoxLayout;
-    m_slider = new QSlider(Qt::Horizontal);
-    m_slider->setRange(0, 1000);
-    m_slider->setValue(100);
-    connect(m_slider, &QSlider::valueChanged, this, [this] {
-        m_timeLabel->setText(formatDuration(currentTime(), m_info.fps));
+    m_timeline = new TimelineSlider;
+    connect(m_timeline, &TimelineSlider::positionChanged, this, [this] {
+        updateTimeLabel();
         schedulePreview();
     });
     m_timeLabel = new QLabel(QStringLiteral("00:00:00:00"));
-    m_timeLabel->setMinimumWidth(90);
+    m_timeLabel->setMinimumWidth(170);
     timeRow->addWidget(m_timeLabel);
-    timeRow->addWidget(m_slider, 1);
+    timeRow->addWidget(m_timeline, 1);
     v->addLayout(timeRow);
 
     auto *rangeRow = new QHBoxLayout;
@@ -203,26 +208,22 @@ QWidget *ExportSettingsDialog::buildPreviewSide()
     m_clearRange = new QPushButton(QStringLiteral("Entire Clip"));
     m_rangeLabel = new QLabel;
     m_rangeLabel->setObjectName("muted");
-    connect(m_setIn, &QPushButton::clicked, this, [this] {
-        m_in = currentTime();
-        if (m_out >= 0 && m_out <= m_in)
-            m_out = -1;
-        updateRangeLabel();
-        updateDerived();
-    });
-    connect(m_setOut, &QPushButton::clicked, this, [this] {
-        const double t = currentTime();
-        if (t > qMax(0.0, m_in))
-            m_out = t;
-        updateRangeLabel();
-        updateDerived();
-    });
+    m_setIn->setToolTip(QStringLiteral("Set the In point at the playhead (I)"));
+    m_setOut->setToolTip(QStringLiteral("Set the Out point at the playhead (O)"));
+    connect(m_setIn, &QPushButton::clicked, this, &ExportSettingsDialog::setInPoint);
+    connect(m_setOut, &QPushButton::clicked, this, &ExportSettingsDialog::setOutPoint);
     connect(m_clearRange, &QPushButton::clicked, this, [this] {
         m_in = m_out = -1;
         updateRangeLabel();
+        syncTimeline();
         updateDerived();
     });
-    rangeRow->addWidget(new QLabel(QStringLiteral("Source Range:")));
+    auto *inKey = new QShortcut(QKeySequence(Qt::Key_I), w, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    connect(inKey, &QShortcut::activated, this, &ExportSettingsDialog::setInPoint);
+    auto *outKey = new QShortcut(QKeySequence(Qt::Key_O), w, nullptr, nullptr, Qt::WidgetWithChildrenShortcut);
+    connect(outKey, &QShortcut::activated, this, &ExportSettingsDialog::setOutPoint);
+    m_rangeTitle = new QLabel(QStringLiteral("Source Range:"));
+    rangeRow->addWidget(m_rangeTitle);
     rangeRow->addWidget(m_setIn);
     rangeRow->addWidget(m_setOut);
     rangeRow->addWidget(m_clearRange);
@@ -248,7 +249,7 @@ QWidget *ExportSettingsDialog::buildPreviewSide()
     cl->addStretch();
     connect(m_cropGroup, &QGroupBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
     v->addWidget(m_cropGroup);
-    updateRangeLabel();
+    syncTimeline();
     return w;
 }
 
@@ -485,6 +486,17 @@ QWidget *ExportSettingsDialog::buildVideoTab()
     m_maxQuality = new QCheckBox(QStringLiteral("Use Maximum Render Quality (Lanczos scaling)"));
     connect(m_maxQuality, &QCheckBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
     af->addRow(QString(), m_maxQuality);
+    m_fpsLimit = new QComboBox;
+    m_fpsLimit->addItem(QStringLiteral("No Limit"), 0.0);
+    m_fpsLimit->addItem(QStringLiteral("30 fps"), 30.0);
+    m_fpsLimit->addItem(QStringLiteral("60 fps"), 60.0);
+    m_fpsLimit->setToolTip(QStringLiteral("When the frame rate matches the source, sources faster than this are "
+                                          "converted down to it (e.g. 120 fps phone footage for a 60 fps platform)."));
+    connect(m_fpsLimit, &QComboBox::activated, this, &ExportSettingsDialog::onFieldChanged);
+    af->addRow(QStringLiteral("Maximum Frame Rate:"), m_fpsLimit);
+    m_scaleBitrate = new QCheckBox(QStringLiteral("Raise bitrate 1.5x for frame rates above 30 fps"));
+    connect(m_scaleBitrate, &QCheckBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
+    af->addRow(QString(), m_scaleBitrate);
     v->addWidget(adv);
     v->addStretch();
 
@@ -740,7 +752,10 @@ void ExportSettingsDialog::setSource(const QStringList &files, const MediaInfo &
     m_info = info;
     m_totalDuration = totalDuration;
     const bool hasVideo = info.valid && info.hasVideo;
-    m_slider->setEnabled(hasVideo && !info.isStill);
+    m_timeline->setEnabled(hasVideo && !info.isStill);
+    m_timeline->setFrameRate(info.fps);
+    m_timeline->setSpan(0, qMax(0.001, previewDuration()));
+    m_timeline->setPosition(previewDuration() * 0.1);
     m_cropL->setMaximum(qMax(0, info.displayWidth() - 16));
     m_cropR->setMaximum(qMax(0, info.displayWidth() - 16));
     m_cropT->setMaximum(qMax(0, info.displayHeight() - 16));
@@ -749,8 +764,8 @@ void ExportSettingsDialog::setSource(const QStringList &files, const MediaInfo &
         m_preview->setMessage(QStringLiteral("Source could not be read:\n%1").arg(info.error));
     else if (!hasVideo)
         m_preview->setMessage(QStringLiteral("Audio-only source"));
-    m_timeLabel->setText(formatDuration(currentTime(), info.fps));
     updateRangeLabel();
+    syncTimeline();
     updateDerived();
 }
 
@@ -762,31 +777,105 @@ void ExportSettingsDialog::setRange(double in, double out)
 {
     m_in = in;
     m_out = out;
-    if (in > 0 && sourceDuration() > 0)
-        m_slider->setValue(int(in / sourceDuration() * 1000));
+    if (in > 0)
+        m_timeline->setPosition(in);
     updateRangeLabel();
+    syncTimeline();
     updateDerived();
 }
 
 double ExportSettingsDialog::sourceDuration() const { return m_totalDuration > 0 ? m_totalDuration : m_info.duration; }
 
-double ExportSettingsDialog::currentTime() const
+double ExportSettingsDialog::currentTime() const { return m_timeline->position(); }
+
+double ExportSettingsDialog::previewDuration() const { return m_files.size() > 1 ? m_info.duration : sourceDuration(); }
+
+double ExportSettingsDialog::rangeIn() const { return qBound(0.0, m_in, previewDuration()); }
+
+double ExportSettingsDialog::rangeOut() const
 {
-    const double d = m_files.size() > 1 ? m_info.duration : sourceDuration();
-    return d * m_slider->value() / 1000.0;
+    const double end = previewDuration();
+    return m_out > 0 ? qMin(m_out, end) : end;
+}
+
+// Source view scrubs the whole clip and shows In/Out ticks; Output view scrubs only In..Out,
+// which is exactly what gets encoded.
+void ExportSettingsDialog::syncTimeline()
+{
+    const bool output = m_viewTabs->currentIndex() == 1;
+    // In/Out and crop edit the source, so they're only offered on the Source tab.
+    for (QWidget *w : std::initializer_list<QWidget *>{m_setIn, m_setOut, m_clearRange, m_cropGroup})
+        w->setVisible(!output);
+    m_rangeTitle->setText(output ? QStringLiteral("Encoding:") : QStringLiteral("Source Range:"));
+    updateRangeLabel();
+    m_timeline->setMarks(m_in, m_out);
+    if (output) {
+        m_timeline->setSpan(rangeIn(), qMax(rangeOut(), rangeIn() + 0.001));
+        m_timeline->setShowMarks(false);
+    } else {
+        m_timeline->setSpan(0, qMax(0.001, previewDuration()));
+        m_timeline->setShowMarks(true);
+    }
+    updateTimeLabel();
+    schedulePreview();
+}
+
+void ExportSettingsDialog::updateTimeLabel()
+{
+    const double fps = m_info.fps;
+    const double t = currentTime();
+    if (m_viewTabs->currentIndex() == 1)
+        m_timeLabel->setText(QStringLiteral("%1 / %2").arg(formatDuration(t - rangeIn(), fps),
+                                                           formatDuration(rangeOut() - rangeIn(), fps)));
+    else
+        m_timeLabel->setText(
+            QStringLiteral("%1 / %2").arg(formatDuration(t, fps), formatDuration(previewDuration(), fps)));
+}
+
+void ExportSettingsDialog::setInPoint()
+{
+    if (!m_timeline->isEnabled() || m_viewTabs->currentIndex() != 0)
+        return;
+    m_in = currentTime();
+    if (m_out >= 0 && m_out <= m_in)
+        m_out = -1;
+    updateRangeLabel();
+    syncTimeline();
+    updateDerived();
+}
+
+void ExportSettingsDialog::setOutPoint()
+{
+    if (!m_timeline->isEnabled() || m_viewTabs->currentIndex() != 0)
+        return;
+    const double t = currentTime();
+    if (t > qMax(0.0, m_in))
+        m_out = t;
+    updateRangeLabel();
+    syncTimeline();
+    updateDerived();
 }
 
 void ExportSettingsDialog::updateRangeLabel()
 {
     const double fps = m_info.fps;
+    const bool output = m_viewTabs && m_viewTabs->currentIndex() == 1;
     if (m_in < 0 && m_out < 0) {
-        m_rangeLabel->setText(QStringLiteral("Entire clip (%1)").arg(formatDuration(sourceDuration(), fps)));
+        m_rangeLabel->setText(output ? QStringLiteral("the entire clip (%1). Set In/Out on the Source tab to trim.")
+                                           .arg(formatDuration(sourceDuration(), fps))
+                                     : QStringLiteral("Entire clip (%1)").arg(formatDuration(sourceDuration(), fps)));
         return;
     }
     const double in = qMax(0.0, m_in);
     const double out = m_out > 0 ? m_out : sourceDuration();
-    m_rangeLabel->setText(QStringLiteral("In %1  ·  Out %2  ·  Duration %3")
-                              .arg(formatDuration(in, fps), formatDuration(out, fps), formatDuration(out - in, fps)));
+    if (output)
+        m_rangeLabel->setText(
+            QStringLiteral("%1 → %2 of the source (%3). Change it on the Source tab.")
+                .arg(formatDuration(in, fps), formatDuration(out, fps), formatDuration(out - in, fps)));
+    else
+        m_rangeLabel->setText(
+            QStringLiteral("In %1  ·  Out %2  ·  Duration %3")
+                .arg(formatDuration(in, fps), formatDuration(out, fps), formatDuration(out - in, fps)));
 }
 
 // ------------------------------------------------------------------ ui <-> settings
@@ -837,6 +926,15 @@ void ExportSettingsDialog::loadToUi()
     m_imageSeq->setChecked(s.video.imageSequence);
     m_stillDuration->setValue(s.video.stillDuration);
     m_maxQuality->setChecked(s.maxRenderQuality);
+    {
+        int i = m_fpsLimit->findData(s.video.frameRateLimit);
+        if (i < 0) {
+            m_fpsLimit->addItem(QStringLiteral("%1 fps").arg(s.video.frameRateLimit), s.video.frameRateLimit);
+            i = m_fpsLimit->count() - 1;
+        }
+        m_fpsLimit->setCurrentIndex(i);
+    }
+    m_scaleBitrate->setChecked(s.video.scaleBitrateWithFps);
     refreshCodecControls();
 
     // Audio
@@ -1011,6 +1109,8 @@ void ExportSettingsDialog::readFromUi()
     s.video.imageSequence = m_imageSeq->isChecked();
     s.video.stillDuration = m_stillDuration->value();
     s.maxRenderQuality = m_maxQuality->isChecked();
+    s.video.frameRateLimit = m_fpsLimit->currentData().toDouble();
+    s.video.scaleBitrateWithFps = m_scaleBitrate->isChecked();
     s.video.extraArgs = m_vExtra->text();
 
     s.audio.codec = m_aCodec->currentData().toString();
@@ -1251,7 +1351,8 @@ void ExportSettingsDialog::updateDerived()
     m_rc->setEnabled(vc && vc->rateControls.size() > 1);
     m_imageSeq->setEnabled(f && f->imageFormat);
     m_stillDuration->setEnabled(!f || !f->imageFormat);
-    m_fpsMode->setEnabled(m_settings.video.frameRate > 0);
+    m_fpsMode->setEnabled(m_settings.video.frameRate > 0 || m_settings.video.frameRateLimit > 0);
+    m_fpsLimit->setEnabled(m_settings.video.frameRate <= 0);
     m_scaleMode->setEnabled(m_settings.video.width > 0 && m_settings.video.height > 0);
 
     // Summary
@@ -1282,6 +1383,8 @@ void ExportSettingsDialog::updateDerived()
         BuildRequest req;
         req.inputs = m_files.isEmpty() ? QStringList{m_info.path} : m_files;
         req.source = m_info;
+        req.inputArgs = m_inputArgs;
+        req.inputArgs = m_inputArgs;
         req.totalDuration = m_totalDuration;
         req.settings = m_settings;
         req.outputPath = outputPath();

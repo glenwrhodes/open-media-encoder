@@ -28,6 +28,8 @@ public:
     void addFiles(const QStringList &files);
     void addFiles(const QStringList &files, const QString &presetId);
     void stitchFiles(QStringList files);
+    // Adds a numbered image sequence (any frame of it); asks for the frame rate.
+    bool addImageSequence(const QString &anyFrame, bool askFrameRate = true);
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -42,6 +44,7 @@ private:
     void addSourceDialog();
     void addFolderDialog();
     void stitchDialog();
+    void imageSequenceDialog();
     void addOutputToSelection();
     void duplicateSelection();
     void removeSelection();

@@ -4,6 +4,7 @@
 #include "Theme.h"
 #include "core/AppSettings.h"
 #include "core/Formats.h"
+#include "core/ImageSequence.h"
 #include "core/MediaFileModel.h"
 #include "core/MediaInfoCache.h"
 #include "core/PresetManager.h"
@@ -502,6 +503,13 @@ void MediaBrowser::showFileMenu(const QPoint &pos)
         if (files.size() > 1)
             menu.addAction(Theme::icon("stitch"), QStringLiteral("Stitch Together and Add to Queue"), this,
                            [this, files] { emit stitchRequested(files); });
+        if (ImageSequence::isImageFile(files.first())) {
+            const ImageSequence seq = ImageSequence::detect(files.first());
+            if (seq.valid)
+                menu.addAction(Theme::icon("image"),
+                               QStringLiteral("Add as Image Sequence (%1 frames)…").arg(seq.count), this,
+                               [this, f = files.first()] { emit imageSequenceRequested(f); });
+        }
         menu.addSeparator();
         if (files.size() == 1)
             menu.addAction(Theme::icon("play"), QStringLiteral("Open in Default Player"), this,

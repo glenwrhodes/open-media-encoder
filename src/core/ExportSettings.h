@@ -23,9 +23,11 @@ struct VideoSettings {
     double targetBitrate = 10.0; // Mbps
     double maxBitrate = 12.0;    // Mbps
     int quality = 23;
-    int keyframeInterval = 0;   // frames, 0 = encoder default
-    bool imageSequence = true;  // image formats: sequence vs. single still
-    double stillDuration = 5.0; // seconds of video generated from a still source
+    int keyframeInterval = 0;         // frames, 0 = encoder default
+    bool imageSequence = true;        // image formats: sequence vs. single still
+    double stillDuration = 5.0;       // seconds of video generated from a still source
+    double frameRateLimit = 0.0;      // 0 = none; faster sources are converted down to this rate
+    bool scaleBitrateWithFps = false; // bitrates are for <= 30 fps and raised 1.5x above that
     QString extraArgs;
 };
 
@@ -87,6 +89,7 @@ struct EffectsSettings {
 // Everything needed to describe one output: format, codec settings and effects.
 struct ExportSettings {
     QString presetName;
+    QString group; // optional preset group, e.g. "YouTube" (shown in the Preset Browser)
     QString format;
     QString comment;
     VideoSettings video;
@@ -106,6 +109,10 @@ struct ExportSettings {
     QString extension() const;
     bool isImageSequence() const;
     QString summary(const MediaInfo *source = nullptr) const;
+    // Frame rate actually produced for a source (explicit rate, else the limit, else the source rate).
+    double effectiveFrameRate(double sourceFps) const;
+    // Bitrate multiplier from scaleBitrateWithFps for the given output frame rate.
+    double bitrateScale(double outputFps) const;
     // Estimated size in bytes for the given duration, or -1 when it can't be estimated.
     qint64 estimateSize(double seconds, const MediaInfo *source = nullptr) const;
 };

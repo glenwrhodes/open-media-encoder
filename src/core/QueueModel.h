@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ExportSettings.h"
+#include "ImageSequence.h"
 #include "MediaInfo.h"
 
 #include <QAbstractItemModel>
@@ -24,6 +25,7 @@ struct OutputItem {
     QString finalPath; // actual file written (after collision handling)
     QDateTime started;
     QDateTime finished;
+    bool autoAdded = false; // default output created with the source; a dropped preset replaces it
 
     QJsonObject toJson() const;
     static OutputItem fromJson(const QJsonObject &o);
@@ -36,9 +38,14 @@ struct SourceItem {
     double totalDuration = 0.0;
     bool probed = false;
     QString watchFolderId;
+    ImageSequence sequence; // valid when the source is a numbered image sequence (files = {pattern})
     QList<OutputItem> outputs;
 
     QString displayName() const;
+    // FFmpeg options needed before -i (image sequence frame rate and start number).
+    QStringList inputArgs() const { return sequence.valid ? sequence.inputArgs() : QStringList(); }
+    // Path whose folder and base name are used for default output names.
+    QString outputBasePath() const;
     double duration() const { return totalDuration > 0 ? totalDuration : info.duration; }
 };
 
@@ -76,6 +83,7 @@ public:
 
     // Queue API
     QString addSource(const QStringList &files, const QString &watchFolderId = {});
+    QString addImageSequence(const ImageSequence &sequence);
     QString addOutput(const QString &sourceId, const ExportSettings &settings, const QString &presetId,
                       const QString &outputDir = {});
     void setSourceInfo(const QString &sourceId, const MediaInfo &info, double totalDuration);
@@ -85,6 +93,10 @@ public:
     bool moveSource(const QString &sourceId, int newRow);
     QString duplicateOutput(const QString &outputId);
     void applyPreset(const QString &outputId, const QString &presetId);
+    // Applies a preset to a source: replaces its untouched auto-added output, otherwise adds a new one.
+    // Returns the affected output id.
+    QString applyPresetToSource(const QString &sourceId, const QString &presetId);
+    void setAutoAdded(const QString &outputId, bool autoAdded);
     void setOutputSettings(const QString &outputId, const ExportSettings &settings, const QString &presetId);
     void setOutputPath(const QString &outputId, const QString &path);
     void setOutputRange(const QString &outputId, double in, double out);

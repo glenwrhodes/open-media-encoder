@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 
 // Metadata for a source file, gathered with ffprobe.
 struct MediaInfo {
@@ -48,7 +49,9 @@ struct MediaInfo {
     QString shortDescription() const;
 
     static MediaInfo fromFfprobeJson(const QJsonObject &root, const QString &path);
-    static MediaInfo probe(const QString &ffprobePath, const QString &path, int timeoutMs = 20000);
+    // inputArgs are demuxer options placed before the input (used for image sequences).
+    static MediaInfo probe(const QString &ffprobePath, const QString &path, int timeoutMs = 20000,
+                           const QStringList &inputArgs = {});
 };
 
 QString formatDuration(double seconds, double fps = 0.0);

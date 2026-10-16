@@ -80,9 +80,8 @@ int nominalFps(double fps) { return qMax(1, int(std::lround(fps))); }
 
 double sourceFps(const BuildRequest &req)
 {
-    if (req.settings.video.frameRate > 0)
-        return req.settings.video.frameRate;
-    return req.source.fps > 0 ? req.source.fps : 25.0;
+    const double fps = req.settings.effectiveFrameRate(req.source.fps);
+    return fps > 0 ? fps : 25.0;
 }
 
 } // namespace
@@ -266,6 +265,21 @@ QString firstSequenceFile(const QString &pattern)
     return p.replace(QStringLiteral("%05d"), QStringLiteral("00000"));
 }
 
+bool samePath(const QString &a, const QString &b)
+{
+    // QFileInfo's operator== treats two missing files as equal (empty canonical paths), so compare
+    // canonical paths only when both exist and fall back to cleaned absolute paths otherwise.
+    const QFileInfo fa(a), fb(b);
+    if (fa.exists() && fb.exists())
+        return fa.canonicalFilePath() == fb.canonicalFilePath();
+#ifdef Q_OS_WIN
+    const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+    const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+    return QDir::cleanPath(fa.absoluteFilePath()).compare(QDir::cleanPath(fb.absoluteFilePath()), cs) == 0;
+}
+
 QString defaultOutputPath(const QString &sourcePath, const ExportSettings &s, const QString &outputDir)
 {
     const QFileInfo fi(sourcePath);
@@ -278,7 +292,7 @@ QString defaultOutputPath(const QString &sourcePath, const ExportSettings &s, co
         return QDir(dir).filePath(QStringLiteral("%1_%05d.%2").arg(base, ext));
     QString path = QDir(dir).filePath(QStringLiteral("%1.%2").arg(base, ext));
     // Never default to overwriting the source itself (e.g. mp4 -> mp4 in the same folder).
-    if (QFileInfo(path) == fi)
+    if (samePath(path, sourcePath))
         path = QDir(dir).filePath(QStringLiteral("%1_1.%2").arg(base, ext));
     return path;
 }
@@ -375,8 +389,9 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
         chain << QStringLiteral("scale=%1:%2:flags=%3").arg(w & ~1).arg(h & ~1).arg(flags);
     }
 
-    if (!preview && v.frameRate > 0 && std::abs(v.frameRate - src.fps) > 0.001 && !src.isStill) {
-        const QString r = fpsToRational(v.frameRate);
+    const double outFps = s.effectiveFrameRate(src.fps);
+    if (!preview && outFps > 0 && std::abs(outFps - src.fps) > 0.001 && !src.isStill) {
+        const QString r = fpsToRational(outFps);
         if (v.frameRateMode == "optical")
             chain << QStringLiteral("minterpolate=fps=%1:mi_mode=mci:mc_mode=aobmc:vsbmc=1").arg(r);
         else if (v.frameRateMode == "blend")
@@ -533,10 +548,14 @@ void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringLi
     if (v.keyframeInterval > 0)
         a << "-g" << QString::number(v.keyframeInterval);
 
-    const QString T = kbps(v.targetBitrate);
-    const QString M = kbps(qMax(v.maxBitrate, v.targetBitrate));
-    const QString Tbuf = kbps(v.targetBitrate * 2);
-    const QString Mbuf = kbps(qMax(v.maxBitrate, v.targetBitrate) * 2);
+    // Presets can specify bitrates for <= 30 fps that rise for high-frame-rate output.
+    const double k = s.bitrateScale(s.effectiveFrameRate(req.source.fps));
+    const double target = v.targetBitrate * k;
+    const double maxRate = qMax(v.maxBitrate, v.targetBitrate) * k;
+    const QString T = kbps(target);
+    const QString M = kbps(maxRate);
+    const QString Tbuf = kbps(target * 2);
+    const QString Mbuf = kbps(maxRate * 2);
     const QString Q = QString::number(v.quality);
     const QString rc = def && def->rateControls.contains(v.rateControl) ? v.rateControl
                        : def                                            ? def->defaultRateControl
@@ -740,7 +759,7 @@ BuildResult build(const BuildRequest &req)
     } else {
         if (req.inPoint > 0 && !src.isStill)
             a << "-ss" << num(req.inPoint);
-        a << "-i" << req.inputs.first();
+        a << req.inputArgs << "-i" << req.inputs.first();
     }
     if (doVideo && s.effects.imageOverlayEnabled && !s.effects.imagePath.isEmpty())
         a << "-i" << s.effects.imagePath;
@@ -805,7 +824,7 @@ BuildResult buildPreview(const BuildRequest &req, double time, const QString &ou
     a << "-hide_banner" << "-nostdin" << "-y" << "-loglevel" << "error";
     if (!src.isStill && time > 0)
         a << "-ss" << num(time);
-    a << "-i" << (req.inputs.isEmpty() ? src.path : req.inputs.first());
+    a << req.inputArgs << "-i" << (req.inputs.isEmpty() ? src.path : req.inputs.first());
 
     const ExportSettings &s = req.settings;
     if (applyEffects) {

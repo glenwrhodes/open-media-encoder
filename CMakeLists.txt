@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(OpenMediaEncoder
-    VERSION 1.1.0
+    VERSION 1.2.0
     DESCRIPTION "Open-source batch media encoder built on Qt and FFmpeg"
     HOMEPAGE_URL "https://github.com/glenwrhodes/open-media-encoder"
     LANGUAGES CXX)

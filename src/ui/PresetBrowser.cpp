@@ -17,6 +17,7 @@
 
 namespace {
 constexpr int IdRole = Qt::UserRole + 1;
+constexpr int GroupRole = Qt::UserRole + 2;
 
 QToolButton *tb(const QString &icon, const QString &tip)
 {
@@ -146,8 +147,9 @@ void PresetBrowser::reload()
     m_tree->clear();
 
     auto *user = new QTreeWidgetItem(m_tree, {QStringLiteral("User Presets")});
+    auto *web = new QTreeWidgetItem(m_tree, {QStringLiteral("Web & Social")});
     auto *system = new QTreeWidgetItem(m_tree, {QStringLiteral("System Presets")});
-    for (auto *top : {user, system}) {
+    for (auto *top : {user, web, system}) {
         QFont f = top->font(0);
         f.setBold(true);
         top->setFont(0, f);
@@ -160,12 +162,41 @@ void PresetBrowser::reload()
         g->setIcon(0, Theme::icon(f.hasVideo() ? (f.imageFormat ? "image" : "film") : "audio", QColor(150, 150, 150)));
         formatGroups.insert(f.id, g);
     }
+    // Platform groups under "Web & Social" in a fixed, familiar order; user groups under "User Presets".
+    static const QStringList platformOrder = {"YouTube",     "Vimeo",    "TikTok",   "Instagram", "Facebook",
+                                              "X (Twitter)", "LinkedIn", "Snapchat", "Pinterest", "Social (Generic)"};
+    QHash<QString, QTreeWidgetItem *> webGroups;
+    for (const QString &g : platformOrder) {
+        auto *item = new QTreeWidgetItem(web, {g});
+        item->setFlags(Qt::ItemIsEnabled);
+        item->setIcon(0, Theme::icon("film", QColor(150, 150, 150)));
+        webGroups.insert(g, item);
+    }
+    QHash<QString, QTreeWidgetItem *> userGroups;
+    auto groupItem = [&](QHash<QString, QTreeWidgetItem *> &groups, QTreeWidgetItem *parent, const QString &name) {
+        QTreeWidgetItem *item = groups.value(name);
+        if (!item) {
+            item = new QTreeWidgetItem(parent, {name});
+            item->setFlags(Qt::ItemIsEnabled);
+            item->setIcon(0, Theme::icon("folder", QColor(150, 150, 150)));
+            groups.insert(name, item);
+        }
+        return item;
+    };
     for (const Preset &p : PresetManager::instance().presets()) {
-        QTreeWidgetItem *parentItem = p.system ? formatGroups.value(p.settings.format) : user;
+        QTreeWidgetItem *parentItem = nullptr;
+        const QString group = p.settings.group;
+        if (!p.system)
+            parentItem = group.isEmpty() ? user : groupItem(userGroups, user, group);
+        else if (!group.isEmpty())
+            parentItem = groupItem(webGroups, web, group);
+        else
+            parentItem = formatGroups.value(p.settings.format);
         if (!parentItem)
             continue;
         auto *it = new QTreeWidgetItem(parentItem, columnsFor(p));
         it->setData(0, IdRole, p.id);
+        it->setData(0, GroupRole, group);
         it->setIcon(0, Theme::icon("preset", p.system ? QColor(140, 140, 140) : Theme::accent()));
         it->setToolTip(0, p.settings.summary());
         it->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsDragEnabled);
@@ -176,9 +207,13 @@ void PresetBrowser::reload()
     for (auto *g : std::as_const(formatGroups))
         if (g->childCount() == 0)
             delete g;
+    for (auto *g : std::as_const(webGroups))
+        if (g->childCount() == 0)
+            delete g;
 
     if (first) {
         user->setExpanded(true);
+        web->setExpanded(true);
         system->setExpanded(true);
     } else {
         for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
@@ -199,7 +234,8 @@ void PresetBrowser::applyFilter()
         std::function<bool(QTreeWidgetItem *)> visit = [&](QTreeWidgetItem *it) -> bool {
             if (it->childCount() == 0) {
                 const bool match = q.isEmpty() || it->text(0).contains(q, Qt::CaseInsensitive) ||
-                                   it->text(1).contains(q, Qt::CaseInsensitive);
+                                   it->text(1).contains(q, Qt::CaseInsensitive) ||
+                                   it->data(0, GroupRole).toString().contains(q, Qt::CaseInsensitive);
                 it->setHidden(!match);
                 return match;
             }

@@ -120,11 +120,12 @@ MediaInfo MediaInfo::fromFfprobeJson(const QJsonObject &root, const QString &pat
     return m;
 }
 
-MediaInfo MediaInfo::probe(const QString &ffprobePath, const QString &path, int timeoutMs)
+MediaInfo MediaInfo::probe(const QString &ffprobePath, const QString &path, int timeoutMs, const QStringList &inputArgs)
 {
     QProcess p;
     p.setProgram(ffprobePath);
-    p.setArguments({"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path});
+    p.setArguments(QStringList{"-v", "error", "-print_format", "json", "-show_format", "-show_streams"} + inputArgs +
+                   QStringList{"-i", path});
     p.start();
     MediaInfo m;
     m.path = path;

@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-16
+
+### Added
+- **Web & Social presets**, grouped by platform in the Preset Browser: YouTube (4K, 1440p,
+  1080p, 720p, 480p, Shorts, plus a 4K HEVC option), Vimeo, TikTok, Instagram (Reels, Stories,
+  portrait, square and landscape feed), Facebook, X (Twitter), LinkedIn, Snapchat, Pinterest and
+  generic vertical/square/portrait. They follow each platform's recommended settings, cap the
+  frame rate at 60 fps, and raise the bitrate automatically for 50/60 fps sources. Vertical and
+  square presets crop to fill.
+- Dragging a preset onto a newly added source **replaces its default output** instead of adding a
+  second one: drag in a movie, drop "YouTube 720p HD" on it, done.
+- **Image sequence input**: File → Add Image Sequence (Ctrl+Shift+I), right-click a frame in the
+  Media Browser, or select several numbered frames. The whole sequence is detected from any frame
+  (padded or unpadded numbering, any start number), you pick the frame rate, and it can be
+  converted to any format. Alpha is preserved, e.g. into ProRes 4444.
+  The command line gains `--sequence` and `--fps`.
+- Export Settings timeline: a scrubber with In/Out tick marks and the selected range highlighted.
+  The **Output** tab scrubs only the In–Out range that will be encoded. I/O keys set In/Out; arrow
+  keys step frames (Shift: seconds).
+- Video settings: **Maximum Frame Rate** and **raise bitrate above 30 fps** options.
+- AAC 384 kbps.
+
+### Changed
+- Set In / Set Out and Crop are now only on the Source tab of Export Settings; the Output tab
+  shows the range being encoded.
+
+### Fixed
+- Output names for sources whose path doesn't exist on disk (such as image sequence patterns)
+  were wrongly treated as clashing with the source.
+
 ## [1.1.0] - 2026-10-16
 
 ### Added
@@ -50,6 +80,7 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/glenwrhodes/open-media-encoder/releases/tag/v1.0.0

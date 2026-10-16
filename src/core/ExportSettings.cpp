@@ -40,6 +40,8 @@ QJsonObject ExportSettings::toJson() const
         {"keyframeInterval", video.keyframeInterval},
         {"imageSequence", video.imageSequence},
         {"stillDuration", video.stillDuration},
+        {"frameRateLimit", video.frameRateLimit},
+        {"scaleBitrateWithFps", video.scaleBitrateWithFps},
         {"extraArgs", video.extraArgs},
     };
     QJsonObject a{
@@ -84,13 +86,10 @@ QJsonObject ExportSettings::toJson() const
         {"cropBottom", e.cropBottom},
     };
     return QJsonObject{
-        {"version", 1},
-        {"presetName", presetName},
-        {"format", format},
-        {"comment", comment},
-        {"maxRenderQuality", maxRenderQuality},
-        {"video", v},
-        {"audio", a},
+        {"version", 1},       {"presetName", presetName},
+        {"group", group},     {"format", format},
+        {"comment", comment}, {"maxRenderQuality", maxRenderQuality},
+        {"video", v},         {"audio", a},
         {"effects", fx},
     };
 }
@@ -99,6 +98,7 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
 {
     ExportSettings s;
     s.presetName = o.value("presetName").toString();
+    s.group = o.value("group").toString();
     s.format = o.value("format").toString("h264");
     s.comment = o.value("comment").toString();
     s.maxRenderQuality = o.value("maxRenderQuality").toBool();
@@ -125,6 +125,8 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     vs.keyframeInterval = v.value("keyframeInterval").toInt();
     vs.imageSequence = v.value("imageSequence").toBool(true);
     vs.stillDuration = v.value("stillDuration").toDouble(5.0);
+    vs.frameRateLimit = v.value("frameRateLimit").toDouble();
+    vs.scaleBitrateWithFps = v.value("scaleBitrateWithFps").toBool();
     vs.extraArgs = v.value("extraArgs").toString();
 
     const QJsonObject a = o.value("audio").toObject();
@@ -224,6 +226,20 @@ QString ExportSettings::extension() const
     return f ? f->extension : QStringLiteral("mp4");
 }
 
+double ExportSettings::effectiveFrameRate(double sourceFps) const
+{
+    if (video.frameRate > 0)
+        return video.frameRate;
+    if (video.frameRateLimit > 0 && sourceFps > video.frameRateLimit + 0.01)
+        return video.frameRateLimit;
+    return sourceFps;
+}
+
+double ExportSettings::bitrateScale(double outputFps) const
+{
+    return video.scaleBitrateWithFps && outputFps > 31.0 ? 1.5 : 1.0;
+}
+
 bool ExportSettings::isImageSequence() const
 {
     const FormatDef *f = Formats::format(format);
@@ -246,10 +262,12 @@ QString ExportSettings::summary(const MediaInfo *source) const
 
         const int w = video.width > 0 ? video.width : (source ? source->displayWidth() : 0);
         const int h = video.height > 0 ? video.height : (source ? source->displayHeight() : 0);
-        const double fps = video.frameRate > 0 ? video.frameRate : (source ? source->fps : 0);
+        const double fps = effectiveFrameRate(source ? source->fps : 0);
         QString frame = (w > 0 && h > 0) ? QStringLiteral("%1x%2").arg(w).arg(h) : QStringLiteral("Match Source");
         if (fps > 0)
             frame += QStringLiteral(" (%1 fps)").arg(fps, 0, 'f', fps == std::floor(fps) ? 0 : 3);
+        else if (video.frameRateLimit > 0)
+            frame += QStringLiteral(", Match Source frame rate (max %1 fps)").arg(video.frameRateLimit);
         else
             frame += QStringLiteral(", Match Source frame rate");
         if (video.fieldOrder != "progressive")
@@ -258,15 +276,18 @@ QString ExportSettings::summary(const MediaInfo *source) const
             frame += QStringLiteral(", Progressive");
         lines << QStringLiteral("  %1").arg(frame);
 
+        const double k = bitrateScale(fps);
         if (video.rateControl == "quality")
             lines << QStringLiteral("  Constant Quality %1").arg(video.quality);
         else if (video.rateControl == "cbr")
-            lines << QStringLiteral("  CBR, Target %1 Mbps").arg(video.targetBitrate, 0, 'f', 1);
+            lines << QStringLiteral("  CBR, Target %1 Mbps").arg(video.targetBitrate * k, 0, 'f', 1);
         else if (video.rateControl == "vbr1" || video.rateControl == "vbr2")
             lines << QStringLiteral("  %1, Target %2 Mbps, Max %3 Mbps")
                          .arg(Formats::rateControlLabel(video.rateControl))
-                         .arg(video.targetBitrate, 0, 'f', 1)
-                         .arg(video.maxBitrate, 0, 'f', 1);
+                         .arg(video.targetBitrate * k, 0, 'f', 1)
+                         .arg(video.maxBitrate * k, 0, 'f', 1);
+        if (video.scaleBitrateWithFps && fps <= 0 && video.rateControl != "quality")
+            lines << QStringLiteral("  Bitrate raised 1.5x for sources above 30 fps");
         if (f->imageFormat)
             lines << (video.imageSequence ? QStringLiteral("  Image sequence")
                                           : QStringLiteral("  Single still frame"));
@@ -325,10 +346,12 @@ qint64 ExportSettings::estimateSize(double seconds, const MediaInfo *source) con
     if (video.enabled && f->hasVideo()) {
         const int w = video.width > 0 ? video.width : (source ? source->displayWidth() : 1920);
         const int h = video.height > 0 ? video.height : (source ? source->displayHeight() : 1080);
-        const double fps = video.frameRate > 0 ? video.frameRate : (source && source->fps > 0 ? source->fps : 29.97);
+        double fps = effectiveFrameRate(source ? source->fps : 0);
+        if (fps <= 0)
+            fps = 29.97;
         const double scale = (double(w) * h * fps) / (1920.0 * 1080.0 * 29.97);
         if (video.rateControl == "cbr" || video.rateControl == "vbr1" || video.rateControl == "vbr2") {
-            videoBps = video.targetBitrate * 1e6;
+            videoBps = video.targetBitrate * bitrateScale(fps) * 1e6;
         } else if (video.codec == "prores_ks") {
             static const double rates[] = {45, 102, 147, 220, 330, 500};
             const int p = qBound(0, video.profile.toInt(), 5);

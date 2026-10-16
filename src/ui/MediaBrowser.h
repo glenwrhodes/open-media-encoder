@@ -32,6 +32,7 @@ signals:
     void addToQueueRequested(const QStringList &files);
     void addToQueueWithPresetRequested(const QStringList &files, const QString &presetId);
     void stitchRequested(const QStringList &files);
+    void imageSequenceRequested(const QString &anyFrame);
     void watchFolderRequested(const QString &folder);
 
 private:

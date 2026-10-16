@@ -383,7 +383,7 @@ bool EncoderEngine::startTask(const QString &sourceId, const QString &outputId)
     if (AppSettings::incrementOutputNames())
         path = CommandBuilder::uniqueOutputPath(path);
     for (const QString &in : src->files) {
-        if (QFileInfo(in) == QFileInfo(path)) {
+        if (CommandBuilder::samePath(in, path)) {
             const QString err = QStringLiteral("Output file is the same as the source file");
             m_model->setStatus(outputId, OutputStatus::Failed, err);
             ++m_failedCount;
@@ -394,6 +394,7 @@ bool EncoderEngine::startTask(const QString &sourceId, const QString &outputId)
 
     BuildRequest req;
     req.inputs = src->files;
+    req.inputArgs = src->inputArgs();
     req.source = src->info;
     req.totalDuration = src->totalDuration;
     req.settings = out->settings;

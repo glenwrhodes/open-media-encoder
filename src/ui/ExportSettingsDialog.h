@@ -20,6 +20,7 @@ class QSpinBox;
 class QTabBar;
 class QTimer;
 class QToolButton;
+class TimelineSlider;
 
 class ExportSettingsDialog : public QDialog
 {
@@ -32,6 +33,8 @@ public:
     void setSource(const QStringList &files, const MediaInfo &info, double totalDuration);
     void setOutputPath(const QString &path);
     void setRange(double in, double out);
+    // Demuxer options for the source (image sequences need their frame rate and start number).
+    void setInputArgs(const QStringList &args) { m_inputArgs = args; }
 
     ExportSettings settings() const { return m_settings; }
     QString presetId() const { return m_presetId; }
@@ -72,6 +75,13 @@ private:
     void updateRangeLabel();
     double currentTime() const;
     double sourceDuration() const;
+    double previewDuration() const; // scrubbable span (first clip when stitched)
+    double rangeIn() const;
+    double rangeOut() const;
+    void syncTimeline();
+    void updateTimeLabel();
+    void setInPoint();
+    void setOutPoint();
 
     Mode m_mode;
     ExportSettings m_settings;
@@ -81,6 +91,7 @@ private:
     double m_totalDuration = 0.0;
     double m_in = -1.0;
     double m_out = -1.0;
+    QStringList m_inputArgs;
     bool m_updating = false;
 
     FrameGrabber *m_grabber = nullptr;
@@ -89,9 +100,10 @@ private:
     // preview side
     QTabBar *m_viewTabs = nullptr;
     FramePreview *m_preview = nullptr;
-    QSlider *m_slider = nullptr;
+    TimelineSlider *m_timeline = nullptr;
     QLabel *m_timeLabel = nullptr;
     QLabel *m_rangeLabel = nullptr;
+    QLabel *m_rangeTitle = nullptr;
     QPushButton *m_setIn = nullptr;
     QPushButton *m_setOut = nullptr;
     QPushButton *m_clearRange = nullptr;
@@ -136,6 +148,8 @@ private:
     QCheckBox *m_imageSeq = nullptr;
     QDoubleSpinBox *m_stillDuration = nullptr;
     QCheckBox *m_maxQuality = nullptr;
+    QComboBox *m_fpsLimit = nullptr;
+    QCheckBox *m_scaleBitrate = nullptr;
 
     // audio
     QWidget *m_audioTab = nullptr;
