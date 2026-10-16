@@ -6,6 +6,7 @@
 #include "PreferencesDialog.h"
 #include "PresetBrowser.h"
 #include "QueuePanel.h"
+#include "TaskbarProgress.h"
 #include "Theme.h"
 #include "WatchFolderPanel.h"
 #include "core/AppSettings.h"
@@ -15,8 +16,10 @@
 #include "core/Formats.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
+#include "core/SystemIntegration.h"
 #include "core/WatchFolderManager.h"
 
+#include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
 #include <QDesktopServices>
@@ -28,6 +31,7 @@
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QInputDialog>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
@@ -119,6 +123,11 @@ MainWindow::MainWindow(QWidget *parent)
     buildMenus();
     wireEngine();
 
+    m_taskbar = new TaskbarProgress(this);
+    m_progressLabel = new QLabel;
+    m_progressLabel->setObjectName("muted");
+    statusBar()->addPermanentWidget(m_progressLabel);
+
     m_tray = new QSystemTrayIcon(windowIcon(), this);
     m_tray->setToolTip(windowTitle());
     if (QSystemTrayIcon::isSystemTrayAvailable())
@@ -136,7 +145,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(m_model, &QueueModel::sourceAdded, this, &MainWindow::probeSource);
-    connect(m_model, &QueueModel::filesDropped, this, &MainWindow::addFiles);
+    connect(m_model, &QueueModel::filesDropped, this, qOverload<const QStringList &>(&MainWindow::addFiles));
     connect(m_model, &QueueModel::queueChanged, this, [this] {
         scheduleSave();
         restartIdleTimer();
@@ -150,7 +159,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_queue, &QueuePanel::removeClicked, this, &MainWindow::removeSelection);
     connect(m_queue, &QueuePanel::startClicked, m_engine, &EncoderEngine::start);
     connect(m_queue, &QueuePanel::pauseClicked, m_engine, &EncoderEngine::pause);
-    connect(m_queue, &QueuePanel::stopClicked, m_engine, &EncoderEngine::stop);
+    connect(m_queue, &QueuePanel::stopClicked, this, &MainWindow::stopQueue);
     connect(m_queue, &QueuePanel::editOutputRequested, this, &MainWindow::editOutput);
     connect(m_queue, &QueuePanel::chooseOutputPathRequested, this, &MainWindow::chooseOutputPath);
     connect(m_queue, &QueuePanel::contextMenuRequested, this, &MainWindow::showQueueContextMenu);
@@ -165,6 +174,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(startShortcut, &QShortcut::activated, m_engine, &EncoderEngine::start);
     auto *delShortcut = new QShortcut(QKeySequence::Delete, m_queue->view(), nullptr, nullptr, Qt::WidgetShortcut);
     connect(delShortcut, &QShortcut::activated, this, &MainWindow::removeSelection);
+    auto *upShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Up), m_queue->view(), nullptr, nullptr, Qt::WidgetShortcut);
+    connect(upShortcut, &QShortcut::activated, this, [this] { moveSelectedSource(-1); });
+    auto *downShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Down), m_queue->view(), nullptr, nullptr, Qt::WidgetShortcut);
+    connect(downShortcut, &QShortcut::activated, this, [this] { moveSelectedSource(1); });
 
     // Watch folders
     connect(m_watch, &WatchFolderManager::filesReady, this, &MainWindow::onWatchFilesReady);
@@ -213,7 +228,17 @@ void MainWindow::buildDocks()
     };
 
     m_media = new MediaBrowser;
-    connect(m_media, &MediaBrowser::addToQueueRequested, this, &MainWindow::addFiles);
+    connect(m_media, &MediaBrowser::addToQueueRequested, this, qOverload<const QStringList &>(&MainWindow::addFiles));
+    connect(m_media, &MediaBrowser::addToQueueWithPresetRequested, this,
+            qOverload<const QStringList &, const QString &>(&MainWindow::addFiles));
+    connect(m_media, &MediaBrowser::stitchRequested, this, &MainWindow::stitchFiles);
+    connect(m_media, &MediaBrowser::watchFolderRequested, this, [this](const QString &folder) {
+        const Preset p = PresetManager::instance().defaultPreset();
+        m_watch->addFolder(folder, WatchOutput{p.settings, p.id, {}});
+        if (QDockWidget *d = findChild<QDockWidget *>(QStringLiteral("watch")))
+            d->show();
+        statusBar()->showMessage(QStringLiteral("Added watch folder %1").arg(QDir::toNativeSeparators(folder)), 5000);
+    });
     m_presets = new PresetBrowser;
     connect(m_presets, &PresetBrowser::applyPresetRequested, this, &MainWindow::applyPreset);
     connect(m_presets, &PresetBrowser::newPresetRequested, this, &MainWindow::newPreset);
@@ -259,8 +284,24 @@ void MainWindow::buildMenus()
     file->addAction(Theme::icon("play"), QStringLiteral("Start Queue"), QKeySequence(Qt::CTRL | Qt::Key_Return),
                     m_engine, &EncoderEngine::start);
     file->addAction(Theme::icon("pause"), QStringLiteral("Pause Queue"), m_engine, &EncoderEngine::pause);
-    file->addAction(Theme::icon("stop"), QStringLiteral("Stop Queue"), QKeySequence(Qt::CTRL | Qt::Key_Period),
-                    m_engine, &EncoderEngine::stop);
+    file->addAction(Theme::icon("stop"), QStringLiteral("Stop Queue"), QKeySequence(Qt::CTRL | Qt::Key_Period), this,
+                    &MainWindow::stopQueue);
+    QMenu *after = file->addMenu(QStringLiteral("When Queue Finishes"));
+    auto *afterGroup = new QActionGroup(after);
+    const QList<QPair<QString, AfterQueue>> afterOptions = {{QStringLiteral("Do Nothing"), AfterQueue::Nothing},
+                                                            {QStringLiteral("Sleep"), AfterQueue::Sleep},
+                                                            {QStringLiteral("Shut Down"), AfterQueue::ShutDown}};
+    for (const auto &opt : afterOptions) {
+        QAction *a = after->addAction(opt.first);
+        a->setCheckable(true);
+        a->setChecked(opt.second == AfterQueue::Nothing);
+        afterGroup->addAction(a);
+        m_afterQueueActions << a;
+        connect(a, &QAction::triggered, this, [this, v = opt.second] {
+            m_afterQueue = v;
+            updateQueueProgress();
+        });
+    }
     file->addSeparator();
     file->addAction(QStringLiteral("Open Queue…"), this, &MainWindow::openQueue);
     file->addAction(QStringLiteral("Save Queue As…"), this, &MainWindow::saveQueueAs);
@@ -316,21 +357,45 @@ void MainWindow::buildMenus()
 
 void MainWindow::wireEngine()
 {
-    connect(m_engine, &EncoderEngine::runningChanged, this, [this] {
+    connect(m_engine, &EncoderEngine::runningChanged, this, [this](bool running) {
         m_queue->setEngineState(m_engine->isRunning(), m_engine->isPaused());
+        if (running) {
+            m_userStopped = false;
+            m_runFinished = 0;
+            m_activeProgress.clear();
+            m_runTimer.start();
+            m_taskbar->setState(TaskbarProgress::State::Normal);
+            m_taskbar->setProgress(0);
+        } else {
+            m_taskbar->setState(TaskbarProgress::State::None);
+        }
+        SystemIntegration::setPreventSleep(running && AppSettings::preventSleepWhileEncoding());
         updateStatus();
+        updateQueueProgress();
     });
-    connect(m_engine, &EncoderEngine::pausedChanged, this, [this] {
+    connect(m_engine, &EncoderEngine::pausedChanged, this, [this](bool paused) {
         m_queue->setEngineState(m_engine->isRunning(), m_engine->isPaused());
+        if (m_engine->isRunning())
+            m_taskbar->setState(paused ? TaskbarProgress::State::Paused : TaskbarProgress::State::Normal);
         updateStatus();
+        updateQueueProgress();
+    });
+    connect(m_engine, &EncoderEngine::taskStarted, this, [this](const QString &, const QString &oid) {
+        m_activeProgress.insert(oid, 0.0);
+        updateQueueProgress();
+    });
+    connect(m_engine, &EncoderEngine::taskProgress, this, [this](const QString &oid, const EncodeStats &st) {
+        m_activeProgress.insert(oid, st.progress);
+        updateQueueProgress();
+    });
+    connect(m_engine, &EncoderEngine::taskFinished, this, [this](const QString &, const QString &oid) {
+        m_activeProgress.remove(oid);
+        ++m_runFinished;
+        updateQueueProgress();
     });
     connect(m_engine, &EncoderEngine::taskStarted, m_encoding, &EncodingPanel::onTaskStarted);
     connect(m_engine, &EncoderEngine::taskProgress, m_encoding, &EncodingPanel::onTaskProgress);
     connect(m_engine, &EncoderEngine::taskFinished, m_encoding, &EncodingPanel::onTaskFinished);
-    connect(m_engine, &EncoderEngine::taskProgress, this, [this](const QString &, const EncodeStats &st) {
-        if (m_engine->activeTasks().size() == 1)
-            setWindowTitle(QStringLiteral("%1% — Open Media Encoder").arg(int(st.progress * 100)));
-    });
     connect(m_engine, &EncoderEngine::queueFinished, this, &MainWindow::onQueueFinished);
     connect(m_engine, &EncoderEngine::sourceCompleted, this, [this](const QString &sid, bool allOk) {
         const SourceItem *s = m_model->source(sid);
@@ -367,12 +432,15 @@ void MainWindow::probeSource(const QString &sourceId)
     }));
 }
 
-void MainWindow::addFiles(const QStringList &paths)
+void MainWindow::addFiles(const QStringList &paths) { addFiles(paths, QString()); }
+
+void MainWindow::addFiles(const QStringList &paths, const QString &presetId)
 {
     const QStringList files = expandMediaFiles(paths);
     if (files.isEmpty())
         return;
-    const Preset p = PresetManager::instance().defaultPreset();
+    const Preset *chosen = PresetManager::instance().find(presetId);
+    const Preset p = chosen ? *chosen : PresetManager::instance().defaultPreset();
     for (const QString &f : files) {
         const QString sid = m_model->addSource({f});
         m_model->addOutput(sid, p.settings, p.id);
@@ -419,12 +487,22 @@ void MainWindow::stitchDialog()
             addFiles(files);
         return;
     }
+    stitchFiles(files);
+}
+
+void MainWindow::stitchFiles(QStringList files)
+{
+    if (files.size() < 2) {
+        addFiles(files);
+        return;
+    }
     std::sort(files.begin(), files.end(), [](const QString &a, const QString &b) {
         return QString::compare(QFileInfo(a).fileName(), QFileInfo(b).fileName(), Qt::CaseInsensitive) < 0;
     });
     const Preset p = PresetManager::instance().defaultPreset();
     const QString sid = m_model->addSource(files);
     m_model->addOutput(sid, p.settings, p.id);
+    statusBar()->showMessage(QStringLiteral("Stitching %1 clips into one output").arg(files.size()), 5000);
 }
 
 QStringList selectedSourceIds(QueueModel *model, const QModelIndexList &rows)
@@ -693,6 +771,19 @@ void MainWindow::showQueueContextMenu(const QPoint &globalPos)
                     m_engine->stopOutput(id);
             });
         menu.addSeparator();
+        QMenu *move = menu.addMenu(QStringLiteral("Move Source (Priority)"));
+        move->addAction(QStringLiteral("To Top"), this, [this] { moveSelectedSource(-1000000); });
+        move->addAction(QStringLiteral("Up\tCtrl+Up"), this, [this] { moveSelectedSource(-1); });
+        move->addAction(QStringLiteral("Down\tCtrl+Down"), this, [this] { moveSelectedSource(1); });
+        move->addAction(QStringLiteral("To Bottom"), this, [this] { moveSelectedSource(1000000); });
+        menu.addSeparator();
+        {
+            const QStringList outs = m_model->outputIdsFor(rows);
+            const OutputItem *first = outs.isEmpty() ? nullptr : m_model->output(outs.first());
+            if (first && first->status == OutputStatus::Done)
+                menu.addAction(Theme::icon("play"), QStringLiteral("Play Output"), this,
+                               &MainWindow::playSelectedOutput);
+        }
         menu.addAction(Theme::icon("folder"), QStringLiteral("Reveal Output in Explorer"), this,
                        &MainWindow::revealSelection);
         const QString sid = m_model->sourceIdFor(rows.first());
@@ -852,6 +943,119 @@ void MainWindow::onQueueFinished(int done, int failed)
             m_tray->showMessage(QStringLiteral("Queue finished"), msg,
                                 failed ? QSystemTrayIcon::Warning : QSystemTrayIcon::Information, 6000);
     }
+    if (!m_userStopped && m_afterQueue != AfterQueue::Nothing)
+        QTimer::singleShot(0, this, &MainWindow::runAfterQueueAction);
+}
+
+void MainWindow::runAfterQueueAction()
+{
+    const AfterQueue action = m_afterQueue;
+    // One-shot: the next queue run won't sleep or shut down unless chosen again.
+    m_afterQueue = AfterQueue::Nothing;
+    if (!m_afterQueueActions.isEmpty())
+        m_afterQueueActions.first()->setChecked(true);
+    updateQueueProgress();
+
+    const QString verb = action == AfterQueue::Sleep ? QStringLiteral("go to sleep") : QStringLiteral("shut down");
+    QMessageBox box(QMessageBox::Information, windowTitle(), QString(), QMessageBox::Cancel, this);
+    QPushButton *now =
+        box.addButton(action == AfterQueue::Sleep ? QStringLiteral("Sleep Now") : QStringLiteral("Shut Down Now"),
+                      QMessageBox::AcceptRole);
+    int remaining = 60;
+    bool timedOut = false;
+    auto refresh = [&] {
+        box.setText(
+            QStringLiteral("The queue has finished.\n\nThe computer will %1 in %2 seconds.").arg(verb).arg(remaining));
+    };
+    refresh();
+    QTimer tick;
+    connect(&tick, &QTimer::timeout, &box, [&] {
+        if (--remaining <= 0) {
+            timedOut = true;
+            box.close();
+        } else {
+            refresh();
+        }
+    });
+    tick.start(1000);
+    box.exec();
+    tick.stop();
+    if (!timedOut && box.clickedButton() != now)
+        return; // cancelled
+    m_model->save(queueFile());
+    if (action == AfterQueue::Sleep)
+        SystemIntegration::sleepComputer();
+    else
+        SystemIntegration::shutDownComputer();
+}
+
+void MainWindow::stopQueue()
+{
+    m_userStopped = true;
+    m_engine->stop();
+}
+
+void MainWindow::moveSelectedSource(int delta)
+{
+    const QModelIndexList rows = m_queue->selectedRows();
+    if (rows.isEmpty())
+        return;
+    const QString sid = m_model->sourceIdFor(rows.first());
+    const QModelIndex idx = m_model->indexForSource(sid);
+    if (!idx.isValid())
+        return;
+    const qint64 target = qint64(idx.row()) + delta;
+    m_model->moveSource(sid, int(qBound<qint64>(0, target, qint64(m_model->rowCount()) - 1)));
+    const QModelIndex moved = m_model->indexForSource(sid);
+    m_queue->view()->selectionModel()->setCurrentIndex(moved,
+                                                       QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+    m_queue->view()->scrollTo(moved);
+}
+
+void MainWindow::playSelectedOutput()
+{
+    const QStringList ids = m_model->outputIdsFor(m_queue->selectedRows());
+    if (ids.isEmpty())
+        return;
+    const OutputItem *o = m_model->output(ids.first());
+    if (!o)
+        return;
+    const QString path = o->finalPath.isEmpty() ? o->outputPath : o->finalPath;
+    if (path.contains(QStringLiteral("%05d")))
+        revealSelection();
+    else if (QFileInfo::exists(path))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+}
+
+void MainWindow::updateQueueProgress()
+{
+    QString after;
+    if (m_afterQueue == AfterQueue::Sleep)
+        after = QStringLiteral("then sleep");
+    else if (m_afterQueue == AfterQueue::ShutDown)
+        after = QStringLiteral("then shut down");
+
+    if (!m_engine->isRunning()) {
+        m_progressLabel->setText(after.isEmpty() ? QString()
+                                                 : QStringLiteral("When the queue finishes: ") + after.mid(5));
+        setWindowTitle(QStringLiteral("Open Media Encoder"));
+        return;
+    }
+    double activeSum = 0.0;
+    for (double v : std::as_const(m_activeProgress))
+        activeSum += v;
+    const int ready = m_model->countWithStatus(OutputStatus::Ready);
+    const int total = m_runFinished + int(m_activeProgress.size()) + ready;
+    const double fraction = total > 0 ? (m_runFinished + activeSum) / total : 0.0;
+    QString text = QStringLiteral("%1 of %2 done  ·  %3%").arg(m_runFinished).arg(total).arg(int(fraction * 100));
+    const double elapsed = m_runTimer.elapsed() / 1000.0;
+    if (fraction > 0.02 && elapsed > 3)
+        text += QStringLiteral("  ·  about %1 left").arg(formatDuration(elapsed * (1.0 - fraction) / fraction));
+    if (!after.isEmpty())
+        text += QStringLiteral("  ·  ") + after;
+    m_progressLabel->setText(text);
+    m_taskbar->setProgress(fraction);
+    setWindowTitle(QStringLiteral("%1% — Open Media Encoder").arg(int(fraction * 100)));
 }
 
 void MainWindow::scheduleSave() { m_saveTimer->start(); }
@@ -875,6 +1079,12 @@ void MainWindow::updateStatus()
         state = QStringLiteral("Idle");
     const int ready = m_model->countWithStatus(OutputStatus::Ready);
     statusBar()->showMessage(QStringLiteral("%1  ·  %2 item%3 ready").arg(state).arg(ready).arg(ready == 1 ? "" : "s"));
+}
+
+MainWindow::~MainWindow()
+{
+    SystemIntegration::setPreventSleep(false);
+    delete m_taskbar;
 }
 
 void MainWindow::closeEvent(QCloseEvent *e)

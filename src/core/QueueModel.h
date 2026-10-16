@@ -81,6 +81,8 @@ public:
     void setSourceInfo(const QString &sourceId, const MediaInfo &info, double totalDuration);
     void removeIndexes(const QModelIndexList &indexes);
     void removeSource(const QString &sourceId);
+    // Moves a source (with its outputs) to newRow; earlier sources encode first.
+    bool moveSource(const QString &sourceId, int newRow);
     QString duplicateOutput(const QString &outputId);
     void applyPreset(const QString &outputId, const QString &presetId);
     void setOutputSettings(const QString &outputId, const ExportSettings &settings, const QString &presetId);

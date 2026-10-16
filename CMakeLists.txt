@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(OpenMediaEncoder
-    VERSION 1.0.0
+    VERSION 1.1.0
     DESCRIPTION "Open-source batch media encoder built on Qt and FFmpeg"
     HOMEPAGE_URL "https://github.com/glenwrhodes/open-media-encoder"
     LANGUAGES CXX)
@@ -29,6 +29,9 @@ add_library(encoder_core STATIC ${CORE_SOURCES})
 target_include_directories(encoder_core PUBLIC src)
 target_link_libraries(encoder_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent)
 target_compile_definitions(encoder_core PUBLIC OME_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+    target_link_libraries(encoder_core PRIVATE powrprof)
+endif()
 
 # ---------------------------------------------------------------- application
 file(GLOB UI_SOURCES CONFIGURE_DEPENDS src/ui/*.cpp src/ui/*.h)
@@ -40,7 +43,7 @@ endif()
 qt_add_executable(OpenMediaEncoder WIN32 ${APP_SOURCES})
 target_link_libraries(OpenMediaEncoder PRIVATE encoder_core Qt6::Widgets)
 if(WIN32)
-    target_link_libraries(OpenMediaEncoder PRIVATE dwmapi)
+    target_link_libraries(OpenMediaEncoder PRIVATE dwmapi ole32)
 endif()
 
 # ---------------------------------------------------------------- bundled FFmpeg

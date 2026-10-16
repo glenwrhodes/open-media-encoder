@@ -48,6 +48,19 @@ and falls back to software encoding automatically.
 - Drag files in from Explorer or the built-in Media Browser; drag presets onto sources.
 - Start, pause (suspends the encoder), resume and stop. Run encodes in parallel. The queue is restored on the next launch.
 - Stitch clips together into one output, or turn a still image into a video.
+- Reorder sources to set priority (Ctrl+Up / Ctrl+Down).
+- Overall progress and time remaining appear in the status bar and on the Windows taskbar button.
+- The computer stays awake while encoding, and can optionally sleep or shut down when the queue finishes.
+
+**Media Browser**
+
+<img src="docs/images/media-browser.png" alt="Media Browser sorted by file type, with Duration and Resolution columns" width="560">
+
+- Click any column to sort. Sort by **Type** to group every MP4 together, every WAV together, and so on.
+- Right-click the header to add columns: Kind, Duration, Resolution, Frame Rate, Codec, Audio,
+  Bitrate and Date Created. Media details are read in the background.
+- Filter by name or by Video / Audio / Images, keep favorite folders, and browse with Enter and Backspace.
+- Right-click files to add them with a specific preset, stitch them, play them or reveal them in Explorer.
 
 **Export settings with a live preview**
 

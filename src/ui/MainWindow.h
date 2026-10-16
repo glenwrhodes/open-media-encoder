@@ -1,5 +1,7 @@
 #pragma once
 
+#include <QElapsedTimer>
+#include <QHash>
 #include <QMainWindow>
 
 class EncoderEngine;
@@ -9,7 +11,9 @@ class PresetBrowser;
 class QueueModel;
 class QueuePanel;
 class QSystemTrayIcon;
+class QLabel;
 class QTimer;
+class TaskbarProgress;
 class WatchFolderManager;
 class WatchFolderPanel;
 struct Preset;
@@ -19,8 +23,11 @@ class MainWindow : public QMainWindow
     Q_OBJECT
 public:
     explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
     void addFiles(const QStringList &files);
+    void addFiles(const QStringList &files, const QString &presetId);
+    void stitchFiles(QStringList files);
 
 protected:
     void closeEvent(QCloseEvent *e) override;
@@ -59,6 +66,11 @@ private:
     void onWatchFilesReady(const QString &folderId, const QStringList &files);
     void onQueueFinished(int done, int failed);
     void scheduleSave();
+    void stopQueue();
+    void moveSelectedSource(int delta);
+    void playSelectedOutput();
+    void updateQueueProgress();
+    void runAfterQueueAction();
     void restartIdleTimer();
     void updateStatus();
 
@@ -75,4 +87,14 @@ private:
     QTimer *m_idleTimer;
     QList<QDockWidget *> m_docks;
     QByteArray m_defaultState;
+
+    enum class AfterQueue { Nothing, Sleep, ShutDown };
+    AfterQueue m_afterQueue = AfterQueue::Nothing;
+    QList<QAction *> m_afterQueueActions;
+    bool m_userStopped = false;
+    TaskbarProgress *m_taskbar = nullptr;
+    QLabel *m_progressLabel = nullptr;
+    QElapsedTimer m_runTimer;
+    int m_runFinished = 0;
+    QHash<QString, double> m_activeProgress;
 };

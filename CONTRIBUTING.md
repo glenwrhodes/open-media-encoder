@@ -65,6 +65,9 @@ src/
     QueueModel.*            Qt item model for sources -> outputs; persistence
     EncoderEngine.*         Runs ffmpeg processes, parses -progress, pause/resume, logging
     WatchFolderManager.*    Polls watch folders and reports files once copying has finished
+    MediaFileModel.*        Sortable/filterable file list for the Media Browser (incl. metadata columns)
+    MediaInfoCache.*        Background ffprobe with a cache keyed by path, size and mtime
+    SystemIntegration.*     Keep-awake, sleep and shutdown hooks
     AppSettings.*           Preferences and well-known paths
   ui/                       Qt Widgets front end
     MainWindow.*            Docks, menus, wiring between panels, engine and model
@@ -72,6 +75,7 @@ src/
     ExportSettingsDialog.*  The big settings dialog with live preview
     PresetBrowser.*, MediaBrowser.*, WatchFolderPanel.*, EncodingPanel.*, PreferencesDialog.*
     FrameGrabber.*          Async single-frame previews via FFmpeg
+    TaskbarProgress.*       Progress on the Windows taskbar button
     Theme.*                 Dark theme and runtime-drawn icons
   main.cpp                  App start-up and the command-line interface
 tests/tst_core.cpp          Integration tests (real FFmpeg encodes)

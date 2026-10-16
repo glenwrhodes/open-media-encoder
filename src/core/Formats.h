@@ -55,6 +55,8 @@ struct FormatDef {
     bool hasAudio() const { return !audioCodecs.isEmpty(); }
 };
 
+enum class MediaKind { Video, Audio, Image, Other };
+
 namespace Formats {
 const QList<FormatDef> &all();
 const FormatDef *format(const QString &id);
@@ -65,4 +67,7 @@ const AudioCodecDef *audioCodec(const QString &encoder);
 QString rateControlLabel(const QString &rc);
 QStringList mediaFileExtensions();
 bool isMediaFile(const QString &path);
+// Classifies a file by extension (no probing).
+MediaKind mediaKind(const QString &path);
+QString mediaKindName(MediaKind kind);
 } // namespace Formats

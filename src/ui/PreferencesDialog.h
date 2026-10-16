@@ -30,6 +30,7 @@ private:
     QSpinBox *m_autoStart;
     QSpinBox *m_parallel;
     QCheckBox *m_hwDecode;
+    QCheckBox *m_preventSleep;
     QComboBox *m_defaultPreset;
     QLineEdit *m_ffmpeg;
     QLabel *m_ffmpegInfo;

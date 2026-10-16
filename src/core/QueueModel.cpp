@@ -408,6 +408,41 @@ void QueueModel::removeSource(const QString &sourceId)
     emit queueChanged();
 }
 
+bool QueueModel::moveSource(const QString &sourceId, int newRow)
+{
+    const QModelIndex idx = indexForSource(sourceId);
+    if (!idx.isValid())
+        return false;
+    const int from = idx.row();
+    const int to = qBound(0, newRow, int(m_sources.size()) - 1);
+    if (from == to)
+        return false;
+    // Output indexes encode their source's row, so remap every persistent index explicitly
+    // (keeps selection and expansion intact in views).
+    emit layoutAboutToBeChanged();
+    const QModelIndexList oldIndexes = persistentIndexList();
+    struct Key {
+        QString sourceId;
+        int outputRow;
+        int column;
+    };
+    QList<Key> keys;
+    keys.reserve(oldIndexes.size());
+    for (const QModelIndex &i : oldIndexes)
+        keys << Key{sourceIdFor(i), i.internalId() == 0 ? -1 : i.row(), i.column()};
+    m_sources.move(from, to);
+    QModelIndexList newIndexes;
+    newIndexes.reserve(keys.size());
+    for (const Key &k : keys) {
+        const QModelIndex src = indexForSource(k.sourceId);
+        newIndexes << (k.outputRow < 0 ? src.siblingAtColumn(k.column) : index(k.outputRow, k.column, src));
+    }
+    changePersistentIndexList(oldIndexes, newIndexes);
+    emit layoutChanged();
+    emit queueChanged();
+    return true;
+}
+
 QString QueueModel::duplicateOutput(const QString &outputId)
 {
     SourceItem *owner = nullptr;

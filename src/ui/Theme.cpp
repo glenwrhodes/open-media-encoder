@@ -8,6 +8,7 @@
 #include <QPixmap>
 #include <QStyleFactory>
 #include <QWidget>
+#include <cmath>
 
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
@@ -257,6 +258,18 @@ QIcon icon(const QString &name, const QColor &colorIn)
         p.drawLine(12, 18, 52, 18);
         p.drawLine(26, 10, 38, 10);
         p.drawPolyline(QPolygonF({QPointF(18, 18), QPointF(21, 54), QPointF(43, 54), QPointF(46, 18)}));
+    } else if (name == "up") {
+        p.drawLine(32, 52, 32, 14);
+        p.drawPolyline(QPolygonF({QPointF(16, 28), QPointF(32, 12), QPointF(48, 28)}));
+    } else if (name == "star") {
+        QPolygonF star;
+        for (int i = 0; i < 10; ++i) {
+            const double r = (i % 2) ? 10.0 : 23.0;
+            constexpr double pi = 3.14159265358979323846;
+            const double a = -pi / 2 + i * pi / 5;
+            star << QPointF(32 + r * std::cos(a), 34 + r * std::sin(a));
+        }
+        p.drawPolygon(star);
     } else if (name == "info") {
         p.drawEllipse(QPointF(32, 32), 22, 22);
         p.drawLine(32, 29, 32, 44);

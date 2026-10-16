@@ -1,6 +1,7 @@
 #include "Formats.h"
 
 #include <QFileInfo>
+#include <QSet>
 
 QString VideoCodecDef::profileLabel(const QString &profile) const
 {
@@ -572,5 +573,34 @@ QStringList mediaFileExtensions()
 }
 
 bool isMediaFile(const QString &path) { return mediaFileExtensions().contains(QFileInfo(path).suffix().toLower()); }
+
+MediaKind mediaKind(const QString &path)
+{
+    static const QSet<QString> audio = {"mp3", "wav", "aif", "aiff", "m4a", "aac", "flac", "ogg", "opus", "wma", "ac3"};
+    static const QSet<QString> image = {"png", "jpg", "jpeg", "tif", "tiff", "dpx", "exr", "bmp", "tga", "webp", "psd"};
+    const QString ext = QFileInfo(path).suffix().toLower();
+    if (audio.contains(ext))
+        return MediaKind::Audio;
+    if (image.contains(ext))
+        return MediaKind::Image;
+    if (mediaFileExtensions().contains(ext))
+        return MediaKind::Video;
+    return MediaKind::Other;
+}
+
+QString mediaKindName(MediaKind kind)
+{
+    switch (kind) {
+    case MediaKind::Video:
+        return QStringLiteral("Video");
+    case MediaKind::Audio:
+        return QStringLiteral("Audio");
+    case MediaKind::Image:
+        return QStringLiteral("Image");
+    case MediaKind::Other:
+        break;
+    }
+    return QStringLiteral("Other");
+}
 
 } // namespace Formats

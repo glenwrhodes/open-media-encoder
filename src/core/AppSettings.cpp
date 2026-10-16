@@ -124,6 +124,7 @@ bool incrementOutputNames() { return value("output/increment", true).toBool(); }
 int parallelEncodes() { return qBound(1, value("encode/parallel", 1).toInt(), 8); }
 bool hardwareDecode() { return value("encode/hwDecode", false).toBool(); }
 bool notifyOnFinish() { return value("queue/notify", true).toBool(); }
+bool preventSleepWhileEncoding() { return value("encode/preventSleep", true).toBool(); }
 bool deletePartialOnFailure() { return value("encode/deletePartial", true).toBool(); }
 int autoStartIdleMinutes() { return value("queue/autoStartIdleMinutes", 0).toInt(); }
 bool autoEncodeWatchFolders() { return value("watch/autoEncode", false).toBool(); }

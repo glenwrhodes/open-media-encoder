@@ -28,6 +28,7 @@ bool incrementOutputNames();
 int parallelEncodes();
 bool hardwareDecode();
 bool notifyOnFinish();
+bool preventSleepWhileEncoding();
 bool deletePartialOnFailure();
 int autoStartIdleMinutes(); // 0 = disabled
 bool autoEncodeWatchFolders();

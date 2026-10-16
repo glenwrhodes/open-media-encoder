@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-16
+
+### Added
+- **Media Browser file list rebuilt**: click any column to sort; a new **Type** column groups
+  files by extension (all MP4s together, then WAVs, …); right-click the header to show or hide
+  optional columns: Kind, Duration, Resolution, Frame Rate, Codec, Audio, Bitrate and Date
+  Created. Media columns are read in the background and cached. Column layout and sort order
+  are remembered.
+- Media Browser filter box and Video / Audio / Images filter, sub-folders in the list
+  (double-click to open), Up / Refresh buttons, favorite folders with quick places, path
+  auto-completion, and keyboard navigation (Enter, Backspace).
+- Media Browser right-click menu: add with a specific preset, stitch the selection, open in the
+  default player, reveal in Explorer, copy path, add folder as a watch folder or favorite.
+- Overall queue progress and time remaining in the status bar, window title and Windows taskbar button.
+- Keeps the computer awake while encoding (can be turned off in Preferences).
+- **File → When Queue Finishes**: sleep or shut down after the queue, with a 60-second cancel countdown.
+- Reorder sources to set encoding priority (right-click → Move Source, or Ctrl+Up / Ctrl+Down).
+- **Play Output** for finished items.
+
+### Fixed
+- The folder tree now scrolls to the current folder when the app starts.
+
 ## [1.0.0] - 2026-10-16
 
 First public release.
@@ -28,5 +50,6 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/glenwrhodes/open-media-encoder/releases/tag/v1.0.0

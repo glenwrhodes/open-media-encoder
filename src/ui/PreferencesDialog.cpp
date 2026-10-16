@@ -92,6 +92,9 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_hwDecode = new QCheckBox(QStringLiteral("Use GPU accelerated decoding when available"));
     m_hwDecode->setChecked(AppSettings::hardwareDecode());
     ef->addRow(QString(), m_hwDecode);
+    m_preventSleep = new QCheckBox(QStringLiteral("Keep the computer awake while encoding"));
+    m_preventSleep->setChecked(AppSettings::preventSleepWhileEncoding());
+    ef->addRow(QString(), m_preventSleep);
     QStringList hw;
     for (const VideoCodecDef &c : Formats::videoCodecs())
         if (c.hardware)
@@ -153,6 +156,7 @@ void PreferencesDialog::accept()
     AppSettings::setValue("presets/default", m_defaultPreset->currentData().toString());
     AppSettings::setValue("encode/parallel", m_parallel->value());
     AppSettings::setValue("encode/hwDecode", m_hwDecode->isChecked());
+    AppSettings::setValue("encode/preventSleep", m_preventSleep->isChecked());
     const QString ff = QDir::fromNativeSeparators(m_ffmpeg->text().trimmed());
     if (ff != AppSettings::ffmpegPath()) {
         AppSettings::setFfmpegPath(ff);

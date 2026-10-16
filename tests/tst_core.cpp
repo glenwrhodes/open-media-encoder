@@ -3,7 +3,9 @@
 #include "core/EncoderCaps.h"
 #include "core/EncoderEngine.h"
 #include "core/Formats.h"
+#include "core/MediaFileModel.h"
 #include "core/MediaInfo.h"
+#include "core/MediaInfoCache.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
 #include "core/WatchFolderManager.h"
@@ -12,6 +14,7 @@
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QMimeData>
 #include <QPainter>
 #include <QProcess>
 #include <QSignalSpy>
@@ -38,6 +41,9 @@ private slots:
     void engineRunsQueue();
     void enginePauseResume();
     void watchFolderPicksUpFiles();
+    void mediaFileModelListsAndSorts();
+    void mediaFileModelMetadataColumns();
+    void queueReorder();
 
 private:
     bool runFfmpeg(const QStringList &args, QString *err = nullptr, int timeoutMs = 180000);
@@ -501,6 +507,126 @@ void CoreTests::watchFolderPicksUpFiles()
     QVERIFY(QFileInfo::exists(QDir(watchDir).filePath("Source/incoming.mov")));
     QVERIFY(!QFileInfo::exists(files.first()));
     mgr.removeFolder(fid);
+}
+
+void CoreTests::mediaFileModelListsAndSorts()
+{
+    const QString dir = m_dir.filePath("browse");
+    QDir().mkpath(dir + "/Sub Folder");
+    auto touch = [&](const QString &name, int bytes) {
+        QFile f(QDir(dir).filePath(name));
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(QByteArray(bytes, 'x'));
+    };
+    touch("b_clip.mp4", 300);
+    touch("a_song.wav", 100);
+    touch("c_clip.mp4", 200);
+    touch("d_still.png", 50);
+    touch("notes.txt", 10);
+
+    MediaFileModel model;
+    MediaFileSortProxy proxy;
+    proxy.setSourceModel(&model);
+    model.setDirectory(dir);
+    QCOMPARE(model.rowCount(), 5); // 4 media files + 1 folder; .txt hidden
+    model.setShowAllFiles(true);
+    QCOMPARE(model.rowCount(), 6);
+    model.setShowAllFiles(false);
+
+    auto namesInOrder = [&] {
+        QStringList out;
+        for (int r = 0; r < proxy.rowCount(); ++r)
+            out << proxy.index(r, MediaFileModel::Name).data().toString();
+        return out;
+    };
+
+    // Sort by type: folder first, then MP4s together (alphabetical within), PNG, WAV.
+    proxy.sort(MediaFileModel::Type, Qt::AscendingOrder);
+    QCOMPARE(namesInOrder(), QStringList({"Sub Folder", "b_clip.mp4", "c_clip.mp4", "d_still.png", "a_song.wav"}));
+    proxy.sort(MediaFileModel::Type, Qt::DescendingOrder);
+    QCOMPARE(namesInOrder(), QStringList({"Sub Folder", "a_song.wav", "d_still.png", "b_clip.mp4", "c_clip.mp4"}));
+
+    // Sort by size (numeric, not text).
+    proxy.sort(MediaFileModel::Size, Qt::DescendingOrder);
+    QCOMPARE(namesInOrder(), QStringList({"Sub Folder", "b_clip.mp4", "c_clip.mp4", "a_song.wav", "d_still.png"}));
+
+    QCOMPARE(proxy.index(1, MediaFileModel::Type).data().toString(), QString("MP4"));
+    QCOMPARE(proxy.index(1, MediaFileModel::Kind).data().toString(), QString("Video"));
+
+    // Filters: name text and kind.
+    proxy.sort(MediaFileModel::Name, Qt::AscendingOrder);
+    proxy.setNameFilterText("clip");
+    QCOMPARE(namesInOrder(), QStringList({"b_clip.mp4", "c_clip.mp4"}));
+    proxy.setNameFilterText(QString());
+    proxy.setKindFilter(MediaFileSortProxy::AudioOnly);
+    QCOMPARE(namesInOrder(), QStringList({"Sub Folder", "a_song.wav"}));
+    proxy.setKindFilter(MediaFileSortProxy::AllMedia);
+
+    // Drag data carries file URLs.
+    QScopedPointer<QMimeData> mime(model.mimeData({model.index(0, 0)}));
+    QCOMPARE(mime->urls().size(), 1);
+
+    // New files show up after a refresh without resetting existing rows.
+    touch("e_new.mov", 10);
+    model.refresh();
+    QCOMPARE(model.rowCount(), 6);
+}
+
+void CoreTests::mediaFileModelMetadataColumns()
+{
+    const QString dir = m_dir.filePath("meta");
+    QDir().mkpath(dir);
+    QVERIFY(QFile::copy(m_clip, QDir(dir).filePath("clip.mov")));
+    QVERIFY(QFile::copy(m_still, QDir(dir).filePath("still.png")));
+
+    MediaFileModel model;
+    model.setShowFolders(false);
+    model.setDirectory(dir);
+    QCOMPARE(model.rowCount(), 2);
+    const int clipRow = model.index(0, 0).data().toString() == "clip.mov" ? 0 : 1;
+
+    // Disabled: no probing, no values.
+    QVERIFY(!model.index(clipRow, MediaFileModel::Resolution).data().isValid());
+
+    QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+    model.setMetadataEnabled(true);
+    model.index(clipRow, MediaFileModel::Resolution).data(); // triggers the background probe
+    QTRY_COMPARE_WITH_TIMEOUT(model.index(clipRow, MediaFileModel::Resolution).data().toString(), QString("1280 × 720"),
+                              20000);
+    QCOMPARE(model.index(clipRow, MediaFileModel::FrameRate).data().toString(), QString("29.970"));
+    QCOMPARE(model.index(clipRow, MediaFileModel::VideoCodec).data().toString(), QString("H.264"));
+    QVERIFY(model.index(clipRow, MediaFileModel::Audio).data().toString().contains("48 kHz"));
+    QVERIFY(model.index(clipRow, MediaFileModel::Duration).data(MediaFileModel::SortRole).toDouble() > 1.5);
+    QVERIFY(changed.count() > 0);
+
+    // The cache answers without probing again.
+    QVERIFY(MediaInfoCache::instance().lookup(QDir(dir).filePath("clip.mov"), false).has_value());
+}
+
+void CoreTests::queueReorder()
+{
+    QueueModel model;
+    const QString a = model.addSource({m_dir.filePath("a.mov")});
+    const QString b = model.addSource({m_dir.filePath("b.mov")});
+    const QString c = model.addSource({m_dir.filePath("c.mov")});
+    ExportSettings s;
+    s.setFormat("h264");
+    const QString outC = model.addOutput(c, s, {});
+    QPersistentModelIndex persistentOut = model.indexForOutput(outC);
+    QVERIFY(persistentOut.isValid());
+
+    QVERIFY(model.moveSource(c, 0));
+    QCOMPARE(model.sources().at(0).id, c);
+    QCOMPARE(model.sources().at(1).id, a);
+    QCOMPARE(model.sources().at(2).id, b);
+    // Persistent indexes to outputs follow their source.
+    QVERIFY(persistentOut.isValid());
+    QCOMPARE(persistentOut.data(QueueModel::IdRole).toString(), outC);
+
+    QVERIFY(model.moveSource(c, 99)); // clamps to the end
+    QCOMPARE(model.sources().at(2).id, c);
+    QCOMPARE(persistentOut.data(QueueModel::IdRole).toString(), outC);
+    QVERIFY(!model.moveSource(c, 2)); // no-op
 }
 
 QTEST_GUILESS_MAIN(CoreTests)
