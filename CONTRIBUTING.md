@@ -68,12 +68,15 @@ src/
     MediaFileModel.*        Sortable/filterable file list for the Media Browser (incl. metadata columns)
     MediaInfoCache.*        Background ffprobe with a cache keyed by path, size and mtime
     SystemIntegration.*     Keep-awake, sleep and shutdown hooks
+    StreamRecorder.*        Live stream recording (FFmpeg stream copy, reconnects, MP4 conversion)
+    YtDlp.*                 Downloads, verifies and updates yt-dlp for web page links
     AppSettings.*           Preferences and well-known paths
   ui/                       Qt Widgets front end
     MainWindow.*            Docks, menus, wiring between panels, engine and model
     QueuePanel.*            Queue view and delegate (inline format/preset combos, progress bars)
     ExportSettingsDialog.*  The big settings dialog with live preview
     PresetBrowser.*, MediaBrowser.*, WatchFolderPanel.*, EncodingPanel.*, PreferencesDialog.*
+    StreamRecorderPanel.*   Paste-a-link recording panel
     FrameGrabber.*          Async single-frame previews via FFmpeg
     TaskbarProgress.*       Progress on the Windows taskbar button
     Theme.*                 Dark theme and runtime-drawn icons

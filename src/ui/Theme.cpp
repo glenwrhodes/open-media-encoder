@@ -167,6 +167,10 @@ QIcon icon(const QString &name, const QColor &colorIn)
         p.setPen(Qt::NoPen);
         p.setBrush(color);
         p.drawRoundedRect(QRectF(13, 13, 38, 38), 5, 5);
+    } else if (name == "record") {
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawEllipse(QPointF(32, 32), 19, 19);
     } else if (name == "plus") {
         p.drawLine(32, 12, 32, 52);
         p.drawLine(12, 32, 52, 32);

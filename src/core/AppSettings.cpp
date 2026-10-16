@@ -1,5 +1,7 @@
 #include "AppSettings.h"
 
+#include "YtDlp.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
@@ -130,5 +132,32 @@ int autoStartIdleMinutes() { return value("queue/autoStartIdleMinutes", 0).toInt
 bool autoEncodeWatchFolders() { return value("watch/autoEncode", false).toBool(); }
 void setAutoEncodeWatchFolders(bool on) { setValue("watch/autoEncode", on); }
 QString defaultPresetId() { return value("presets/default", "sys/h264/Match Source - High bitrate").toString(); }
+
+QString ytDlpPath()
+{
+    const QString configured = value("tools/ytdlp").toString();
+    if (!configured.isEmpty() && QFileInfo::exists(configured))
+        return configured;
+    if (QFileInfo::exists(YtDlp::managedPath()))
+        return YtDlp::managedPath();
+    const QString appLocal = QDir(QCoreApplication::applicationDirPath()).filePath(exeName("yt-dlp"));
+    if (QFileInfo::exists(appLocal))
+        return appLocal;
+    return QStandardPaths::findExecutable(QStringLiteral("yt-dlp"));
+}
+
+void setYtDlpPath(const QString &path) { setValue("tools/ytdlp", path); }
+
+QString recordingDir()
+{
+    const QString configured = value("recorder/folder").toString();
+    if (!configured.isEmpty())
+        return configured;
+    return QDir(QStandardPaths::writableLocation(QStandardPaths::MoviesLocation))
+        .filePath(QStringLiteral("Stream Recordings"));
+}
+
+void setRecordingDir(const QString &dir) { setValue("recorder/folder", dir); }
+bool reconnectRecordings() { return value("recorder/reconnect", true).toBool(); }
 
 } // namespace AppSettings

@@ -35,4 +35,11 @@ bool autoEncodeWatchFolders();
 void setAutoEncodeWatchFolders(bool on);
 QString defaultPresetId();
 
+// Stream recording
+QString ytDlpPath(); // configured, next to the executable, or on PATH; empty when not installed
+void setYtDlpPath(const QString &path);
+QString recordingDir(); // where new stream recordings are saved
+void setRecordingDir(const QString &dir);
+bool reconnectRecordings(); // start a new part when a stream drops mid-recording
+
 } // namespace AppSettings

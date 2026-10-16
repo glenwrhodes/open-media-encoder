@@ -98,6 +98,19 @@ presets crop landscape footage to fill, and bitrates rise automatically for 60 f
 Altogether there are 120+ presets, including ProRes/DNxHR mastering and GPU encoding. You can
 save, import and share your own presets as JSON files.
 
+**Stream Recorder**
+- Paste a link to a live stream and press **Record**. It saves the stream to disk as it plays.
+- **YouTube and Twitch** pages work directly: paste the watch page (or a channel's `/live` link)
+  and the stream behind it is found for you. This uses the free
+  [yt-dlp](https://github.com/yt-dlp/yt-dlp) helper, which the app downloads on first use and keeps up to date.
+- Direct stream links work too: HLS (`.m3u8`), DASH, RTMP, RTSP IP cameras, SRT, UDP and internet radio.
+- The stream is copied as is, with no re-encoding or quality loss, into MP4, MKV or MPEG-TS. MP4
+  recordings are crash-safe: they're written as MKV and converted when the recording ends.
+- Stop after a set time or record until stopped. If the stream drops, it reconnects and continues
+  in a new part. Record several streams at once while the queue keeps encoding.
+- DRM-protected streams (Netflix and similar) can't be recorded. Only record streams you have the
+  right to save, and respect each site's terms.
+
 **Automation**
 - **Watch folders:** drop files into a folder and they are encoded automatically into `Output/`, and the source moves to `Source/`.
 - **Command line:** headless encoding for scripts and render farms (see below).
@@ -113,6 +126,15 @@ OpenMediaEncoder.exe --preset "HEVC/HD 1080p" --in 10 --out 25 -o excerpt.mp4 in
 OpenMediaEncoder.exe --preset "H.264/Match Source - High bitrate" --stitch -o reel.mp4 a.mov b.mov c.mov
 OpenMediaEncoder.exe --preset "TikTok 1080x1920" --sequence --fps 30 -o title.mp4 renders\title_0001.png
 ```
+
+Record a live stream (Ctrl+C stops it and keeps what was recorded):
+
+```powershell
+OpenMediaEncoder.exe --record "https://www.youtube.com/@SomeChannel/live" --duration 3600 -o D:\Recordings
+OpenMediaEncoder.exe --record "rtsp://192.168.1.20/stream1" --format mkv -o porch-camera.mkv
+```
+
+Run `--record` from Windows Task Scheduler to record a stream at a set time.
 
 Run with no `--preset` to open the app with the given files queued. The exit code is `0` on
 success and `1` if any encode failed.
@@ -151,7 +173,7 @@ Run these from a *Developer PowerShell for VS 2022*. Qt Creator also opens `CMak
 ```
 src/core   UI-free engine: format/codec registry, export settings, ffprobe probing, the FFmpeg
            command builder (filter graphs, rate control, two-pass), presets, queue model,
-           encoding engine, watch folders
+           encoding engine, watch folders, stream recorder
 src/ui     Qt Widgets front end: main window and panels, Export Settings dialog, preferences
 tests      Integration tests that run real encodes through FFmpeg for every preset and effect
 scripts    FFmpeg fetch (pinned + checksummed) and packaging
@@ -169,7 +191,8 @@ Help is welcome on any of these. See [CONTRIBUTING.md](CONTRIBUTING.md) to get s
 - [ ] macOS and Linux builds (the core is portable; packaging and CI need work)
 - [ ] HDR: HDR10 / HLG metadata passthrough and tone mapping
 - [ ] Audio channel mapping and multi-track audio export
-- [ ] Image-sequence and proxy-workflow inputs
+- [ ] Proxy-workflow inputs
+- [ ] Scheduled recordings in the app (the command line can already be scheduled)
 - [ ] Publish destinations (upload to YouTube, Vimeo, S3, FTP after encoding)
 - [ ] Translations (wrap UI strings in `tr()` and add Qt Linguist catalogues)
 - [ ] More presets: broadcast delivery specs, archival, platform updates

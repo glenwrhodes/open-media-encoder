@@ -6,17 +6,21 @@
 #include "core/MediaInfo.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
+#include "core/StreamRecorder.h"
+#include "core/YtDlp.h"
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
 
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
 #include <QTextStream>
 #include <QtConcurrent>
+#include <atomic>
 #include <cstdio>
 
 #ifdef Q_OS_WIN
@@ -192,6 +196,116 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
     return exitCode;
 }
 
+std::atomic<StreamRecording *> g_cliRecording{nullptr};
+
+#ifdef Q_OS_WIN
+BOOL WINAPI onConsoleCtrl(DWORD type)
+{
+    if (type != CTRL_C_EVENT && type != CTRL_BREAK_EVENT && type != CTRL_CLOSE_EVENT)
+        return FALSE;
+    if (StreamRecording *r = g_cliRecording.load())
+        QMetaObject::invokeMethod(r, &StreamRecording::stop, Qt::QueuedConnection);
+    return TRUE;
+}
+#endif
+
+int runRecordCli(QApplication &app, const QCommandLineParser &parser)
+{
+    attachConsole();
+    QTextStream out(stdout);
+    QTextStream err(stderr);
+
+    RecordingOptions opt;
+    opt.url = parser.value("record").trimmed();
+    if (!StreamLink::isStreamUrl(opt.url)) {
+        err << "Not a stream or web page link: " << opt.url << "\n";
+        return 2;
+    }
+    opt.container = parser.isSet("format") ? parser.value("format").toLower() : QStringLiteral("mkv");
+    if (opt.container == "mpegts")
+        opt.container = "ts";
+    opt.outputDir = AppSettings::recordingDir();
+    const QString o = parser.value("output");
+    if (!o.isEmpty()) {
+        const QFileInfo fi(o);
+        const QString ext = fi.suffix().toLower();
+        if (fi.isDir() || ext.isEmpty()) {
+            opt.outputDir = fi.absoluteFilePath();
+        } else {
+            opt.outputDir = fi.absolutePath();
+            opt.name = fi.completeBaseName();
+            if (!parser.isSet("format") && (ext == "mp4" || ext == "mkv" || ext == "ts"))
+                opt.container = ext;
+        }
+    }
+    if (opt.container != "mkv" && opt.container != "mp4" && opt.container != "ts") {
+        err << "Unknown format: " << opt.container << " (use mkv, mp4 or ts)\n";
+        return 2;
+    }
+    opt.maxSeconds = parser.isSet("duration") ? qMax(0, int(parser.value("duration").toDouble())) : 0;
+    opt.reconnect = AppSettings::reconnectRecordings();
+
+    if (!StreamLink::isDirectMedia(opt.url) && AppSettings::ytDlpPath().isEmpty()) {
+        out << "Downloading yt-dlp to find the stream on this page...\n";
+        out.flush();
+        YtDlpInstaller installer;
+        QEventLoop loop;
+        bool ok = false;
+        QString error;
+        QObject::connect(&installer, &YtDlpInstaller::finished, &loop, [&](bool success, const QString &e) {
+            ok = success;
+            error = e;
+            loop.quit();
+        });
+        installer.start();
+        loop.exec();
+        if (!ok) {
+            err << "Couldn't set up yt-dlp: " << error << "\n";
+            return 1;
+        }
+    }
+
+    StreamRecorder recorder;
+    QString lastState;
+    StreamRecording *rec = nullptr;
+    QObject::connect(&recorder, &StreamRecorder::recordingAdded, [&](StreamRecording *r) {
+        rec = r;
+        g_cliRecording = r;
+    });
+    QObject::connect(&recorder, &StreamRecorder::recordingChanged, [&](StreamRecording *r) {
+        const QString state = r->stateText();
+        if (r->state() == StreamRecording::State::Recording) {
+            out << "\r  " << state << "  " << formatDuration(r->recordedSeconds()) << "  " << formatBytes(r->bytes())
+                << "      ";
+        } else if (state != lastState) {
+            out << "\n" << state;
+        }
+        lastState = state;
+        out.flush();
+    });
+    QObject::connect(&recorder, &StreamRecorder::recordingFinished, &app, [&](StreamRecording *) { app.quit(); });
+#ifdef Q_OS_WIN
+    SetConsoleCtrlHandler(onConsoleCtrl, TRUE);
+#endif
+    out << "Recording " << opt.url << " (Ctrl+C to stop)\n";
+    out.flush();
+    recorder.record(opt);
+    if (rec && rec->isActive())
+        app.exec();
+    g_cliRecording = nullptr;
+    out << "\n";
+    if (!rec || rec->state() != StreamRecording::State::Done) {
+        err << "Recording failed: " << (rec ? rec->error() : QStringLiteral("unknown error")) << "\n";
+        return 1;
+    }
+    out << "Saved " << formatDuration(rec->recordedSeconds()) << ":\n";
+    for (const QString &f : rec->files())
+        out << "  " << QDir::toNativeSeparators(f) << "\n";
+    if (!rec->note().isEmpty())
+        out << rec->note() << "\n";
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char *argv[])
@@ -216,12 +330,21 @@ int main(int argc, char *argv[])
     parser.addOption({"sequence", QStringLiteral("Treat each input image as a frame of a numbered image sequence.")});
     parser.addOption({"fps", QStringLiteral("Frame rate for --sequence inputs (default 24)."), "rate"});
     parser.addOption({"list-presets", QStringLiteral("List available preset ids and exit.")});
+    parser.addOption({"record",
+                      QStringLiteral("Record a live stream or web page (YouTube, Twitch...) until it ends, the "
+                                     "--duration passes or Ctrl+C is pressed. -o sets the file or folder."),
+                      "link"});
+    parser.addOption({"duration", QStringLiteral("Stop --record after this many seconds."), "seconds"});
+    parser.addOption({"format", QStringLiteral("File format for --record: mkv (default), mp4 or ts."), "format"});
     parser.addPositionalArgument(QStringLiteral("files"), QStringLiteral("Media files to add to the queue."),
                                  "[files...]");
     parser.process(app);
 
     EncoderCaps::instance().probe(AppSettings::ffmpegPath());
     PresetManager::instance().load();
+
+    if (parser.isSet("record"))
+        return runRecordCli(app, parser);
 
     if (parser.isSet("preset") || parser.isSet("list-presets")) {
         EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());

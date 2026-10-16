@@ -38,8 +38,11 @@ foreach ($f in "OpenMediaEncoder.exe", "ffmpeg.exe", "ffprobe.exe") {
 
 $deploy = if ($QtDir) { Join-Path $QtDir "bin\windeployqt.exe" } else { (Get-Command windeployqt.exe -ErrorAction Stop).Source }
 & $deploy --release --compiler-runtime --no-translations --no-system-d3d-compiler --no-opengl-sw `
-    --skip-plugin-types "tls,networkinformation,qmltooling,generic" (Join-Path $stage "OpenMediaEncoder.exe")
+    --skip-plugin-types "networkinformation,qmltooling,generic" (Join-Path $stage "OpenMediaEncoder.exe")
 if ($LASTEXITCODE) { throw "windeployqt failed" }
+# HTTPS (used to download yt-dlp) goes through Windows' own TLS; the OpenSSL backend would need extra DLLs.
+Get-ChildItem (Join-Path $stage "tls") -Filter "*.dll" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -notlike "qschannelbackend*" } | Remove-Item
 
 # Smoke test: the packaged app can list presets using only what is inside the package.
 $presets = & (Join-Path $stage "OpenMediaEncoder.exe") --list-presets | Out-String

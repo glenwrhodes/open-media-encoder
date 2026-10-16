@@ -10,6 +10,8 @@ class MediaBrowser;
 class PresetBrowser;
 class QueueModel;
 class QueuePanel;
+class StreamRecorder;
+class StreamRecorderPanel;
 class QSystemTrayIcon;
 class QLabel;
 class QTimer;
@@ -76,6 +78,8 @@ private:
     void runAfterQueueAction();
     void restartIdleTimer();
     void updateStatus();
+    void updatePreventSleep();
+    void showRecorder();
 
     QueueModel *m_model;
     EncoderEngine *m_engine;
@@ -85,6 +89,8 @@ private:
     MediaBrowser *m_media;
     WatchFolderPanel *m_watchPanel;
     EncodingPanel *m_encoding;
+    StreamRecorder *m_recorder;
+    StreamRecorderPanel *m_recorderPanel;
     QSystemTrayIcon *m_tray;
     QTimer *m_saveTimer;
     QTimer *m_idleTimer;
@@ -95,6 +101,7 @@ private:
     AfterQueue m_afterQueue = AfterQueue::Nothing;
     QList<QAction *> m_afterQueueActions;
     bool m_userStopped = false;
+    bool m_afterQueueWaiting = false; // sleep/shut down once the running recordings finish
     TaskbarProgress *m_taskbar = nullptr;
     QLabel *m_progressLabel = nullptr;
     QElapsedTimer m_runTimer;

@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-16
+
+### Added
+- **Stream Recorder**: paste a link and press Record to save a live stream to disk as it plays.
+  - Works with web pages such as **YouTube and Twitch live streams**. The app downloads the free
+    yt-dlp helper the first time (after asking), verifies its checksum, and keeps it up to date.
+    YouTube live sends picture and sound separately; both are recorded into one file in sync.
+  - Also works with direct links: HLS (`.m3u8`), DASH, RTMP, RTSP (IP cameras), SRT, UDP and
+    HTTP streams, including internet radio.
+  - Recording copies the stream as is: no re-encoding, no quality loss and very little CPU.
+  - Save as MP4, MKV or MPEG-TS. MP4 recordings are written as MKV while recording, so nothing is
+    lost if the computer crashes, and turned into a normal MP4 at the end.
+  - Stop after a set time (15 minutes to 12 hours, or a custom length), or record until stopped.
+  - If the stream drops, the recorder reconnects and continues in a new part.
+  - Record several streams at once, alongside the encoding queue. Finished recordings can be
+    sent to the encoding queue from the right-click menu.
+  - File → Record Stream (Ctrl+Shift+R) opens the panel and pastes a link from the clipboard.
+- `--record <link>` on the command line, with `--duration`, `--format` and `-o`. Combined with
+  Windows Task Scheduler this gives scheduled recordings.
+- Preferences → Recording: reconnect option and yt-dlp location, version and update button.
+
+### Changed
+- The computer is kept awake while recording as well as while encoding, and "When Queue
+  Finishes" sleep or shut down waits for running recordings to end.
+
 ## [1.2.0] - 2026-10-16
 
 ### Added
@@ -80,7 +105,8 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/glenwrhodes/open-media-encoder/releases/tag/v1.0.0

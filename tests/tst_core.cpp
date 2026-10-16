@@ -9,6 +9,7 @@
 #include "core/MediaInfoCache.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
+#include "core/StreamRecorder.h"
 #include "core/WatchFolderManager.h"
 
 #include <QColor>
@@ -19,8 +20,52 @@
 #include <QPainter>
 #include <QProcess>
 #include <QSignalSpy>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QtTest>
+
+// Serves files from a folder over HTTP, enough for ffmpeg to read a live HLS stream.
+class TinyHttpServer : public QTcpServer
+{
+public:
+    explicit TinyHttpServer(const QString &root)
+        : m_root(root)
+    {
+        connect(this, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *s = nextPendingConnection()) {
+                connect(s, &QTcpSocket::disconnected, s, &QObject::deleteLater);
+                connect(s, &QTcpSocket::readyRead, s, [this, s] {
+                    QByteArray &buf = m_pending[s];
+                    buf += s->readAll();
+                    if (!buf.contains("\r\n\r\n"))
+                        return;
+                    const QByteArray path = buf.split(' ').value(1).split('?').value(0);
+                    m_pending.remove(s);
+                    QFile f(m_root + QString::fromUtf8(path));
+                    if (!path.contains("..") && f.open(QIODevice::ReadOnly)) {
+                        const QByteArray body = f.readAll();
+                        const QByteArray type = path.endsWith(".m3u8") ? "application/vnd.apple.mpegurl" : "video/mp2t";
+                        s->write("HTTP/1.1 200 OK\r\nContent-Type: " + type + "\r\nContent-Length: " +
+                                 QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                    } else {
+                        s->write("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    }
+                    s->disconnectFromHost();
+                });
+            }
+        });
+        listen(QHostAddress::LocalHost);
+    }
+    QString url(const QString &file) const
+    {
+        return QStringLiteral("http://127.0.0.1:%1/%2").arg(serverPort()).arg(file);
+    }
+
+private:
+    QString m_root;
+    QHash<QTcpSocket *, QByteArray> m_pending;
+};
 
 class CoreTests : public QObject
 {
@@ -50,10 +95,17 @@ private slots:
     void presetReplacesAutoOutput();
     void frameRateLimitAndBitrateScaling();
     void platformPresetsPresent();
+    void streamLinkHelpers();
+    void ytDlpJsonParsing();
+    void recordLiveHttpStreamToMp4();
+    void recordHlsWithTimeLimit();
+    void recordSplitVideoAndAudio();
+    void recordDeadLinkFails();
 
 private:
     bool runFfmpeg(const QStringList &args, QString *err = nullptr, int timeoutMs = 180000);
     BuildRequest requestFor(const ExportSettings &s, const QString &out);
+    QProcess *startLiveSource(const QStringList &outputArgs, const QStringList &inputs = {});
 
     QTemporaryDir m_dir;
     QString m_clip;
@@ -867,5 +919,231 @@ void CoreTests::platformPresetsPresent()
     QCOMPARE(tiktok.video.height, 1920);
 }
 
+QProcess *CoreTests::startLiveSource(const QStringList &outputArgs, const QStringList &inputs)
+{
+    auto *p = new QProcess(this);
+    p->setWorkingDirectory(m_dir.path());
+    QStringList args{"-hide_banner", "-loglevel", "error", "-re"};
+    args << (inputs.isEmpty() ? QStringList{"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=25", "-f", "lavfi", "-i",
+                                            "sine=frequency=440"}
+                              : inputs);
+    args << QStringList{"-c:v", "libx264", "-preset", "ultrafast", "-g", "25", "-c:a", "aac", "-t", "40"};
+    p->start(AppSettings::ffmpegPath(), args + outputArgs);
+    p->waitForStarted();
+    return p;
+}
+
+void CoreTests::streamLinkHelpers()
+{
+    QVERIFY(StreamLink::isStreamUrl("https://example.com/live/index.m3u8"));
+    QVERIFY(StreamLink::isStreamUrl("  rtmp://live.example.com/app/key  "));
+    QVERIFY(StreamLink::isStreamUrl("srt://10.0.0.5:9000"));
+    QVERIFY(StreamLink::isStreamUrl("udp://:1234"));
+    QVERIFY(StreamLink::isStreamUrl("https://www.youtube.com/watch?v=abc123"));
+    QVERIFY(!StreamLink::isStreamUrl("C:/Videos/clip.mp4"));
+    QVERIFY(!StreamLink::isStreamUrl("not a link"));
+    QVERIFY(!StreamLink::isStreamUrl("ftp://example.com/file.ts"));
+
+    QVERIFY(StreamLink::isDirectMedia("https://cdn.example.com/hls/master.m3u8?token=abc"));
+    QVERIFY(StreamLink::isDirectMedia("http://radio.example.com:8000/stream.mp3"));
+    QVERIFY(StreamLink::isDirectMedia("rtsp://192.168.1.20/cam1"));
+    QVERIFY(!StreamLink::isDirectMedia("https://www.youtube.com/watch?v=abc123"));
+    QVERIFY(!StreamLink::isDirectMedia("https://www.twitch.tv/somechannel"));
+
+    QStringList a = StreamLink::inputArgs("https://cdn.example.com/live.m3u8",
+                                          {{"User-Agent", "TestAgent/1.0"}, {"Referer", "https://example.com/"}});
+    QVERIFY(a.contains("-reconnect_streamed"));
+    QCOMPARE(a.at(a.indexOf("-user_agent") + 1), QString("TestAgent/1.0"));
+    QCOMPARE(a.at(a.indexOf("-headers") + 1), QString("Referer: https://example.com/\r\n"));
+    a = StreamLink::inputArgs("rtsp://cam/stream");
+    QCOMPARE(a.at(a.indexOf("-rtsp_transport") + 1), QString("tcp"));
+    QVERIFY(!a.contains("-reconnect"));
+    QVERIFY(StreamLink::inputArgs("C:/temp/live.m3u8").isEmpty());
+
+    const QDateTime when(QDate(2026, 10, 16), QTime(20, 5, 9));
+    QCOMPARE(StreamLink::suggestedName("https://www.twitch.tv/x", QString(), when),
+             QString("twitch.tv 2026-10-16 20-05-09"));
+    QCOMPARE(StreamLink::suggestedName("https://x.com/a", "Live: Q&A / \"Launch\"?", when),
+             QString("Live_ Q&A _ _Launch__ 2026-10-16 20-05-09"));
+    QCOMPARE(StreamLink::sanitizeFileName("  trailing dots... "), QString("trailing dots"));
+}
+
+void CoreTests::ytDlpJsonParsing()
+{
+    // One stream with picture and sound (Twitch, most sites).
+    ResolvedStream rs = StreamLink::parseYtDlpJson(
+        R"({"title":"My Stream 2026-10-16 14:12","fulltitle":"My Stream","is_live":true,"url":"https://host/x.m3u8",
+            "http_headers":{"User-Agent":"UA"}})");
+    QVERIFY(rs.ok());
+    QVERIFY(rs.isLive);
+    QCOMPARE(rs.title, QString("My Stream"));
+    QCOMPARE(rs.url, QString("https://host/x.m3u8"));
+    QVERIFY(rs.audioUrl.isEmpty());
+    QCOMPARE(rs.headers.size(), 1);
+
+    // YouTube live: picture and sound are separate HLS streams.
+    rs = StreamLink::parseYtDlpJson(
+        R"({"title":"News","live_status":"is_live","requested_formats":[
+              {"url":"https://g/v.m3u8","vcodec":"avc1.64002A","acodec":"none","http_headers":{"User-Agent":"UA"}},
+              {"url":"https://g/a.m3u8","vcodec":"none","acodec":"mp4a.40.2"}]})");
+    QVERIFY(rs.ok());
+    QVERIFY(rs.isLive);
+    QCOMPARE(rs.url, QString("https://g/v.m3u8"));
+    QCOMPARE(rs.audioUrl, QString("https://g/a.m3u8"));
+    QCOMPARE(rs.headers.value(0).second, QString("UA"));
+
+    // The video already carries sound: the extra audio stream isn't needed.
+    rs = StreamLink::parseYtDlpJson(
+        R"({"title":"T","requested_formats":[{"url":"https://t/v.m3u8","vcodec":"avc1","acodec":"mp4a"},
+                                              {"url":"https://t/a.m3u8","vcodec":"none","acodec":"mp4a"}]})");
+    QCOMPARE(rs.url, QString("https://t/v.m3u8"));
+    QVERIFY(rs.audioUrl.isEmpty());
+
+    QVERIFY(!StreamLink::parseYtDlpJson(R"({"title":"Nothing"})").ok());
+    QVERIFY(!StreamLink::parseYtDlpJson("garbage").ok());
+}
+
+void CoreTests::recordLiveHttpStreamToMp4()
+{
+    const int port = 41000 + int(QCoreApplication::applicationPid() % 1000);
+    const QString url = QStringLiteral("http://127.0.0.1:%1/live.ts").arg(port);
+    QProcess *server = startLiveSource({"-f", "mpegts", "-listen", "1", url});
+    QTest::qWait(1500);
+
+    const QString dir = m_dir.filePath("recordings");
+    StreamRecorder recorder;
+    QSignalSpy active(&recorder, &StreamRecorder::activeCountChanged);
+    RecordingOptions opt;
+    opt.url = url;
+    opt.outputDir = dir;
+    opt.container = "mp4";
+    StreamRecording *rec = recorder.record(opt);
+    QCOMPARE(recorder.activeCount(), 1);
+    QTRY_VERIFY_WITH_TIMEOUT(rec->recordedSeconds() >= 4.0, 20000);
+    QCOMPARE(rec->state(), StreamRecording::State::Recording);
+    QVERIFY(rec->bytes() > 0);
+    QCOMPARE(rec->files().size(), 1);
+    QVERIFY(rec->files().first().endsWith(".mkv")); // recorded as MKV first
+    rec->stop();
+    QVERIFY(recorder.waitForAll(30000));
+    QCOMPARE(rec->state(), StreamRecording::State::Done);
+    QVERIFY2(rec->note().isEmpty(), qPrintable(rec->note()));
+    QCOMPARE(rec->files().size(), 1);
+    const QString file = rec->files().first();
+    QVERIFY2(file.endsWith(".mp4"), qPrintable(file));
+    QVERIFY(QFileInfo(file).fileName().startsWith("127.0.0.1 "));
+    QCOMPARE(QDir(dir).entryList({"*.mkv"}, QDir::Files).size(), 0); // converted, not left behind
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), file);
+    QVERIFY2(info.valid, qPrintable(info.error));
+    QVERIFY(info.hasVideo);
+    QVERIFY(info.hasAudio);
+    QVERIFY2(info.duration >= 3.5, qPrintable(QString::number(info.duration)));
+    QCOMPARE(active.last().first().toInt(), 0);
+    server->kill();
+    server->waitForFinished();
+}
+
+void CoreTests::recordHlsWithTimeLimit()
+{
+    const QString hls = m_dir.filePath("hls");
+    QDir().mkpath(hls);
+    QProcess *server = startLiveSource(
+        {"-f", "hls", "-hls_time", "1", "-hls_list_size", "4", "-hls_flags", "delete_segments", hls + "/live.m3u8"});
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(hls + "/live.m3u8"), 15000);
+    QTest::qWait(1000);
+
+    TinyHttpServer http(hls);
+    QVERIFY(http.isListening());
+    StreamRecorder recorder;
+    RecordingOptions opt;
+    opt.url = http.url("live.m3u8");
+    opt.outputDir = m_dir.filePath("recordings");
+    opt.name = "Timed: HLS";
+    opt.container = "ts";
+    opt.maxSeconds = 3;
+    StreamRecording *rec = recorder.record(opt);
+    QVERIFY(recorder.waitForAll(30000));
+    QCOMPARE(rec->state(), StreamRecording::State::Done);
+    QVERIFY2(rec->stateText().contains("time limit"), qPrintable(rec->stateText()));
+    const QString file = rec->files().value(0);
+    QCOMPARE(QFileInfo(file).fileName(), QString("Timed_ HLS.ts"));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), file);
+    QVERIFY2(info.valid, qPrintable(info.error));
+    QVERIFY2(qAbs(info.duration - 3.0) < 1.0, qPrintable(QString::number(info.duration)));
+
+    // A second recording with the same name doesn't overwrite the first.
+    StreamRecording *again = recorder.record(opt);
+    QVERIFY(recorder.waitForAll(30000));
+    QCOMPARE(QFileInfo(again->files().value(0)).fileName(), QString("Timed_ HLS (2).ts"));
+    server->kill();
+    server->waitForFinished();
+}
+
+void CoreTests::recordSplitVideoAndAudio()
+{
+    // Like YouTube live: picture and sound arrive as two separate live HLS streams.
+    const QString hls = m_dir.filePath("split");
+    QDir().mkpath(hls);
+    auto *video = startLiveSource({"-an", "-f", "hls", "-hls_time", "1", "-hls_list_size", "5", hls + "/video.m3u8"});
+    auto *audio = new QProcess(this);
+    audio->start(AppSettings::ffmpegPath(),
+                 {"-hide_banner", "-loglevel", "error", "-re", "-f", "lavfi", "-i", "sine=frequency=440", "-c:a", "aac",
+                  "-t", "40", "-f", "hls", "-hls_time", "1", "-hls_list_size", "5", hls + "/audio.m3u8"});
+    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(hls + "/video.m3u8") && QFileInfo::exists(hls + "/audio.m3u8"), 15000);
+    QTest::qWait(1500);
+
+    TinyHttpServer http(hls);
+    QVERIFY(http.isListening());
+    // Feed the recorder a resolved page through a stand-in for yt-dlp.
+    const QString fakeYtDlp = m_dir.filePath("fake-yt-dlp.cmd");
+    {
+        QFile f(fakeYtDlp);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        const QString json = QStringLiteral(R"({"fulltitle":"Split Live","is_live":true,"requested_formats":[)"
+                                            R"({"url":"%1","vcodec":"h264","acodec":"none"},)"
+                                            R"({"url":"%2","vcodec":"none","acodec":"aac"}]})")
+                                 .arg(http.url("video.m3u8"), http.url("audio.m3u8"));
+        f.write("@echo off\r\necho " + json.toUtf8() + "\r\n");
+    }
+    RecordingOptions opt;
+    opt.url = "https://www.example.com/watch?v=live";
+    opt.outputDir = m_dir.filePath("recordings");
+    opt.maxSeconds = 4;
+    StreamRecording rec("split", opt, AppSettings::ffmpegPath(), fakeYtDlp);
+    QSignalSpy done(&rec, &StreamRecording::finished);
+    rec.start();
+    QVERIFY(done.wait(40000));
+    QVERIFY2(rec.state() == StreamRecording::State::Done, qPrintable(rec.error() + "\n" + rec.logTail()));
+    const QString file = rec.files().value(0);
+    QVERIFY2(QFileInfo(file).fileName().startsWith("Split Live 20"), qPrintable(file));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), file);
+    QVERIFY2(info.valid, qPrintable(info.error));
+    QVERIFY(info.hasVideo);
+    QVERIFY(info.hasAudio);
+    QVERIFY2(info.duration >= 3.5 && info.duration < 12, qPrintable(QString::number(info.duration)));
+    for (QProcess *p : {video, audio}) {
+        p->kill();
+        p->waitForFinished();
+    }
+}
+
+void CoreTests::recordDeadLinkFails()
+{
+    StreamRecorder recorder;
+    RecordingOptions opt;
+    opt.url = QStringLiteral("http://127.0.0.1:%1/nothing.m3u8").arg(43000 + QCoreApplication::applicationPid() % 1000);
+    opt.outputDir = m_dir.filePath("dead");
+    QElapsedTimer t;
+    t.start();
+    StreamRecording *rec = recorder.record(opt);
+    QVERIFY(recorder.waitForAll(60000));
+    QCOMPARE(rec->state(), StreamRecording::State::Failed);
+    QVERIFY(!rec->error().isEmpty());
+    QVERIFY(rec->files().isEmpty());
+    QVERIFY(QDir(opt.outputDir).entryList(QDir::Files).isEmpty());
+    qInfo() << "dead link failed after" << t.elapsed() << "ms:" << rec->error();
+}
+
 QTEST_GUILESS_MAIN(CoreTests)
+
 #include "tst_core.moc"

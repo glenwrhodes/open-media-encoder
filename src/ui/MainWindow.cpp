@@ -6,6 +6,7 @@
 #include "PreferencesDialog.h"
 #include "PresetBrowser.h"
 #include "QueuePanel.h"
+#include "StreamRecorderPanel.h"
 #include "TaskbarProgress.h"
 #include "Theme.h"
 #include "WatchFolderPanel.h"
@@ -17,6 +18,7 @@
 #include "core/ImageSequence.h"
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
+#include "core/StreamRecorder.h"
 #include "core/SystemIntegration.h"
 #include "core/WatchFolderManager.h"
 
@@ -118,6 +120,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_model = new QueueModel(this);
     m_engine = new EncoderEngine(m_model, this);
     m_watch = new WatchFolderManager(this);
+    m_recorder = new StreamRecorder(this);
 
     m_queue = new QueuePanel(m_model);
     setCentralWidget(m_queue);
@@ -200,8 +203,21 @@ MainWindow::MainWindow(QWidget *parent)
     QTimer::singleShot(0, this, [this, state] {
         applyDefaultDockSizes();
         m_defaultState = saveState();
-        if (!state.isEmpty())
+        if (!state.isEmpty()) {
             restoreState(state);
+            // Layouts saved before the Stream Recorder existed leave it loose; tab it with Watch Folders.
+            if (!AppSettings::value("ui/recorderDockPlaced").toBool()) {
+                auto *watch = findChild<QDockWidget *>(QStringLiteral("watch"));
+                auto *rec = findChild<QDockWidget *>(QStringLiteral("recorder"));
+                if (watch && rec && !watch->isFloating()) {
+                    tabifyDockWidget(watch, rec);
+                    watch->raise();
+                    if (auto *enc = findChild<QDockWidget *>(QStringLiteral("encoding")); enc && !enc->isFloating())
+                        resizeDocks({watch, enc}, {width() / 4, width() * 2 / 5}, Qt::Horizontal);
+                }
+            }
+        }
+        AppSettings::setValue("ui/recorderDockPlaced", true);
     });
     updateStatus();
 
@@ -249,11 +265,15 @@ void MainWindow::buildDocks()
     m_watchPanel = new WatchFolderPanel(m_watch);
     connect(m_watchPanel, &WatchFolderPanel::editOutputRequested, this, &MainWindow::editWatchOutput);
     m_encoding = new EncodingPanel(m_model);
+    m_recorderPanel = new StreamRecorderPanel(m_recorder);
+    connect(m_recorderPanel, &StreamRecorderPanel::addToQueueRequested, this,
+            qOverload<const QStringList &>(&MainWindow::addFiles));
 
     auto *mediaDock = makeDock(QStringLiteral("Media Browser"), m_media, "media");
     auto *presetDock = makeDock(QStringLiteral("Preset Browser"), m_presets, "presets");
     auto *watchDock = makeDock(QStringLiteral("Watch Folders"), m_watchPanel, "watch");
     auto *encDock = makeDock(QStringLiteral("Encoding"), m_encoding, "encoding");
+    auto *recDock = makeDock(QStringLiteral("Stream Recorder"), m_recorderPanel, "recorder");
 
     // Browsers run full height on the left; watch folders and encoding sit side by side under the queue.
     setCorner(Qt::BottomLeftCorner, Qt::LeftDockWidgetArea);
@@ -264,6 +284,8 @@ void MainWindow::buildDocks()
     addDockWidget(Qt::BottomDockWidgetArea, watchDock);
     addDockWidget(Qt::BottomDockWidgetArea, encDock);
     splitDockWidget(watchDock, encDock, Qt::Horizontal);
+    tabifyDockWidget(watchDock, recDock);
+    watchDock->raise();
 }
 
 void MainWindow::applyDefaultDockSizes()
@@ -285,6 +307,8 @@ void MainWindow::buildMenus()
     file->addAction(Theme::icon("image"), QStringLiteral("Add Image Sequence…"),
                     QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_I), this, &MainWindow::imageSequenceDialog);
     file->addAction(Theme::icon("stitch"), QStringLiteral("Stitch Clips Together…"), this, &MainWindow::stitchDialog);
+    file->addAction(Theme::icon("record", QColor(0xe5, 0x48, 0x48)), QStringLiteral("Record Stream…"),
+                    QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R), this, &MainWindow::showRecorder);
     file->addSeparator();
     file->addAction(Theme::icon("play"), QStringLiteral("Start Queue"), QKeySequence(Qt::CTRL | Qt::Key_Return),
                     m_engine, &EncoderEngine::start);
@@ -374,7 +398,7 @@ void MainWindow::wireEngine()
         } else {
             m_taskbar->setState(TaskbarProgress::State::None);
         }
-        SystemIntegration::setPreventSleep(running && AppSettings::preventSleepWhileEncoding());
+        updatePreventSleep();
         updateStatus();
         updateQueueProgress();
     });
@@ -402,6 +426,27 @@ void MainWindow::wireEngine()
     connect(m_engine, &EncoderEngine::taskProgress, m_encoding, &EncodingPanel::onTaskProgress);
     connect(m_engine, &EncoderEngine::taskFinished, m_encoding, &EncodingPanel::onTaskFinished);
     connect(m_engine, &EncoderEngine::queueFinished, this, &MainWindow::onQueueFinished);
+
+    connect(m_recorder, &StreamRecorder::activeCountChanged, this, [this](int active) {
+        updatePreventSleep();
+        updateStatus();
+        if (active == 0 && m_afterQueueWaiting) {
+            m_afterQueueWaiting = false;
+            if (!m_engine->isRunning())
+                runAfterQueueAction();
+        }
+    });
+    connect(m_recorder, &StreamRecorder::recordingFinished, this, [this](StreamRecording *r) {
+        const bool ok = r->state() == StreamRecording::State::Done;
+        const QString name = r->files().isEmpty() ? r->options().url : QFileInfo(r->files().last()).fileName();
+        statusBar()->showMessage(
+            (ok ? QStringLiteral("Recording saved: ") : QStringLiteral("Recording failed: ")) + name, 10000);
+        if (AppSettings::notifyOnFinish() && m_tray->isVisible())
+            m_tray->showMessage(ok ? QStringLiteral("Recording saved") : QStringLiteral("Recording failed"),
+                                ok ? QStringLiteral("%1 (%2)").arg(name, formatDuration(r->recordedSeconds()))
+                                   : r->error(),
+                                ok ? QSystemTrayIcon::Information : QSystemTrayIcon::Warning, 6000);
+    });
     connect(m_engine, &EncoderEngine::sourceCompleted, this, [this](const QString &sid, bool allOk) {
         const SourceItem *s = m_model->source(sid);
         if (s && allOk && !s->watchFolderId.isEmpty())
@@ -1033,6 +1078,14 @@ void MainWindow::onQueueFinished(int done, int failed)
 
 void MainWindow::runAfterQueueAction()
 {
+    if (m_recorder->activeCount() > 0) {
+        // Don't cut a recording short; carry out the action once the recordings end.
+        m_afterQueueWaiting = true;
+        statusBar()->showMessage(
+            QStringLiteral("Queue finished. Waiting for stream recordings to end before %1.")
+                .arg(m_afterQueue == AfterQueue::Sleep ? QStringLiteral("sleeping") : QStringLiteral("shutting down")));
+        return;
+    }
     const AfterQueue action = m_afterQueue;
     // One-shot: the next queue run won't sleep or shut down unless chosen again.
     m_afterQueue = AfterQueue::Nothing;
@@ -1162,7 +1215,25 @@ void MainWindow::updateStatus()
     else
         state = QStringLiteral("Idle");
     const int ready = m_model->countWithStatus(OutputStatus::Ready);
-    statusBar()->showMessage(QStringLiteral("%1  ·  %2 item%3 ready").arg(state).arg(ready).arg(ready == 1 ? "" : "s"));
+    QString text = QStringLiteral("%1  ·  %2 item%3 ready").arg(state).arg(ready).arg(ready == 1 ? "" : "s");
+    if (const int rec = m_recorder->activeCount())
+        text += QStringLiteral("  ·  Recording %1 stream%2").arg(rec).arg(rec == 1 ? "" : "s");
+    statusBar()->showMessage(text);
+}
+
+void MainWindow::updatePreventSleep()
+{
+    SystemIntegration::setPreventSleep((m_engine->isRunning() || m_recorder->activeCount() > 0) &&
+                                       AppSettings::preventSleepWhileEncoding());
+}
+
+void MainWindow::showRecorder()
+{
+    if (QDockWidget *d = findChild<QDockWidget *>(QStringLiteral("recorder"))) {
+        d->show();
+        d->raise();
+    }
+    m_recorderPanel->focusUrl();
 }
 
 MainWindow::~MainWindow()
@@ -1173,14 +1244,29 @@ MainWindow::~MainWindow()
 
 void MainWindow::closeEvent(QCloseEvent *e)
 {
-    if (m_engine->isRunning()) {
-        if (QMessageBox::question(this, windowTitle(),
-                                  QStringLiteral("Encoding is in progress. Stop encoding and quit?")) !=
-            QMessageBox::Yes) {
+    const int recording = m_recorder->activeCount();
+    if (m_engine->isRunning() || recording > 0) {
+        QString question;
+        if (m_engine->isRunning() && recording > 0)
+            question = QStringLiteral("Encoding and stream recording are in progress. Stop them and quit?\n\n"
+                                      "What has been recorded so far is kept.");
+        else if (recording > 0)
+            question = QStringLiteral("%1 stream recording%2 in progress. Stop recording and quit?\n\n"
+                                      "What has been recorded so far is kept.")
+                           .arg(recording)
+                           .arg(recording == 1 ? QStringLiteral(" is") : QStringLiteral("s are"));
+        else
+            question = QStringLiteral("Encoding is in progress. Stop encoding and quit?");
+        if (QMessageBox::question(this, windowTitle(), question) != QMessageBox::Yes) {
             e->ignore();
             return;
         }
         m_engine->stop();
+        if (recording > 0) {
+            statusBar()->showMessage(QStringLiteral("Finishing recordings…"));
+            m_recorder->stopAll();
+            m_recorder->waitForAll(20000);
+        }
     }
     m_model->save(queueFile());
     m_watch->save();

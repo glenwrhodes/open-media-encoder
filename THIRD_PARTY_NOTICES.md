@@ -19,6 +19,16 @@ them as separate programs; it does not link against FFmpeg libraries.
 
 You can replace the bundled FFmpeg with any other build under *Preferences → FFmpeg*.
 
+## yt-dlp (downloaded on demand, not bundled)
+
+To record from web pages such as YouTube and Twitch, Open Media Encoder downloads
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) from the project's official GitHub releases the first
+time it is needed, after asking. The download is checked against the release's published SHA-256
+list, saved to `%LOCALAPPDATA%\OpenMediaEncoder\Tools`, and run as a separate program. yt-dlp
+is released into the public domain under the [Unlicense](https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE);
+its Windows build bundles third-party components described in that project. You can point
+*Preferences → Recording* at your own copy instead.
+
 ## Qt
 
 Open Media Encoder is built with [Qt 6](https://www.qt.io/), used under the

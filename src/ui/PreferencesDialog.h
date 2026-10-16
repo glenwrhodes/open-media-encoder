@@ -21,6 +21,9 @@ protected:
     void accept() override;
 
 private:
+    void refreshYtDlpInfo();
+
+private:
     QRadioButton *m_outSource;
     QRadioButton *m_outCustom;
     QLineEdit *m_customDir;
@@ -34,5 +37,8 @@ private:
     QComboBox *m_defaultPreset;
     QLineEdit *m_ffmpeg;
     QLabel *m_ffmpegInfo;
+    QCheckBox *m_reconnect;
+    QLineEdit *m_ytDlp;
+    QLabel *m_ytDlpInfo;
     bool m_ffmpegChanged = false;
 };

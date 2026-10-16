@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(OpenMediaEncoder
-    VERSION 1.2.0
+    VERSION 1.3.0
     DESCRIPTION "Open-source batch media encoder built on Qt and FFmpeg"
     HOMEPAGE_URL "https://github.com/glenwrhodes/open-media-encoder"
     LANGUAGES CXX)
@@ -12,7 +12,7 @@ option(OME_BUILD_TESTS "Build the integration test suite" ON)
 set(OME_FFMPEG_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ffmpeg" CACHE PATH
     "Folder containing ffmpeg.exe/ffprobe.exe to bundle (see scripts/fetch-ffmpeg.ps1)")
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets Concurrent Network)
 qt_standard_project_setup()
 
 if(MSVC)
@@ -27,7 +27,7 @@ endif()
 file(GLOB CORE_SOURCES CONFIGURE_DEPENDS src/core/*.cpp src/core/*.h)
 add_library(encoder_core STATIC ${CORE_SOURCES})
 target_include_directories(encoder_core PUBLIC src)
-target_link_libraries(encoder_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent)
+target_link_libraries(encoder_core PUBLIC Qt6::Core Qt6::Gui Qt6::Concurrent Qt6::Network)
 target_compile_definitions(encoder_core PUBLIC OME_VERSION="${PROJECT_VERSION}")
 if(WIN32)
     target_link_libraries(encoder_core PRIVATE powrprof)
