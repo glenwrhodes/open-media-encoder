@@ -5,11 +5,15 @@
 <h1 align="center">Open Media Encoder</h1>
 
 <p align="center">
-  <strong>A free, open-source batch media encoder for Windows and Linux, built on Qt 6 and FFmpeg.</strong><br>
+  <strong>A free alternative to Adobe Media Encoder, with extra features.</strong><br>
+  Open source, for Windows and Linux, built on Qt 6 and FFmpeg.
+</p>
+
+<p align="center">
   Queue up your media, pick presets, add LUTs, overlays and loudness normalization, and encode
   to H.264, HEVC, AV1, ProRes, DNxHR and more, with GPU acceleration.<br>
-  Hit an exact file size or quality score, compare before and after, cut out silences and "um"s, and caption
-  speech automatically, all offline.
+  Then go further: hit an exact file size or quality score, compare before and after, cut out
+  silences and "um"s, caption speech automatically (all offline), and record live streams.
 </p>
 
 <p align="center">
@@ -23,6 +27,26 @@
 <p align="center">
   <img src="docs/images/main-window.png" alt="Open Media Encoder main window: preset browser, encode queue with multiple outputs per source, watch folders and live encoding progress">
 </p>
+
+## What is it?
+
+**If you've used Adobe Media Encoder, you already know how this works.** It's a full desktop
+encoding app built around the same workflow: a batch queue where each source can have several
+outputs, a preset browser, watch folders, and an Export Settings window with a live preview,
+In/Out points, effects and every codec setting. It is not a thin FFmpeg wrapper: you never type a
+command, and FFmpeg simply does the encoding underneath.
+
+| The Media Encoder workflow you know | Plus extras |
+| --- | --- |
+| Batch queue with several outputs per source, pause, resume and parallel encodes | **Target file size**: "keep it under 10 MB for Discord" |
+| 125+ presets: YouTube, TikTok, Instagram, ProRes, DNxHR, H.264, HEVC, AV1... | **Target quality**: pick a VMAF score instead of guessing a bitrate |
+| Watch folders that encode whatever lands in them | **Compare** a test encode with the original, side by side |
+| Export Settings with live preview, In/Out, crop, LUTs, overlays, timecode, captions | **Automatic captions** from speech, offline |
+| Loudness normalization, broadcast limiter, image sequences, stitching clips | **Remove silence and filler words** from narration |
+| GPU encoding (NVIDIA, Intel, AMD, VA-API) | **Vertical video** with a blurred background instead of black bars |
+| Command line for scripts and render farms | **Stream Recorder**: save YouTube, Twitch and other live streams |
+
+And it's free, open source (MIT) and runs on Linux as well as Windows.
 
 ---
 
