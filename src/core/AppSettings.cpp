@@ -137,7 +137,7 @@ bool incrementOutputNames() { return value("output/increment", true).toBool(); }
 int parallelEncodes() { return qBound(1, value("encode/parallel", 1).toInt(), 8); }
 bool hardwareDecode()
 {
-    // GPU decoding became the default in 1.5.1; switch earlier settings over once.
+    // GPU decoding became the default in 1.6.0; switch earlier settings over once.
     if (!value("encode/hwDecodeDefaultV2").toBool()) {
         setValue("encode/hwDecodeDefaultV2", true);
         setValue("encode/hwDecode", true);

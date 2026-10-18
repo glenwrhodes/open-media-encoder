@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-10-18
+
 ### Added
 - Splash screen: shown the moment the app starts while FFmpeg is checked and presets load, with
   the app's name, version, release date and author over new artwork. It stays up for a few
@@ -20,6 +22,10 @@ All notable changes to this project are documented here. The format is based on
   - Linux packages include a Vulkan build of whisper.cpp for NVIDIA, AMD and Intel GPUs, used when
     the system has a Vulkan driver.
   - The log says when speech recognition ran on the GPU.
+
+### Fixed
+- GPU decoding is tested at startup and only used where it works: on Linux without VA-API drivers,
+  FFmpeg would otherwise stop with an error instead of decoding in software.
 
 ## [1.5.0] - 2026-10-18
 
@@ -180,7 +186,8 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...v1.3.0
