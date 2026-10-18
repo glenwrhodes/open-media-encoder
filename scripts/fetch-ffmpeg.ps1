@@ -36,7 +36,15 @@ New-Item -ItemType Directory -Force $work | Out-Null
 try {
     $zip = Join-Path $work "ffmpeg.zip"
     Write-Host "Downloading FFmpeg $Version ..."
-    Invoke-WebRequest -Uri $Url -OutFile $zip -UseBasicParsing
+    # Retry: a single failed response from the download host shouldn't fail a CI build.
+    for ($attempt = 1; ; $attempt++) {
+        try { Invoke-WebRequest -Uri $Url -OutFile $zip -UseBasicParsing; break }
+        catch {
+            if ($attempt -ge 5) { throw }
+            Write-Host "Download failed ($($_.Exception.Message)); retrying in 5 s ..."
+            Start-Sleep -Seconds 5
+        }
+    }
 
     # .NET APIs keep this working in both Windows PowerShell 5.1 and PowerShell 7.
     $stream = [IO.File]::OpenRead($zip)

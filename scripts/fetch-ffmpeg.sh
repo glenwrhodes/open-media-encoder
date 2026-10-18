@@ -62,7 +62,7 @@ sha256() {
     if command -v sha256sum > /dev/null; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 download() { # url file expected-sha256
-    curl -fsSL --retry 3 -o "$2" "$1"
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "$2" "$1"
     local actual
     actual="$(sha256 "$2")"
     if [[ "$actual" != "$3" ]]; then
@@ -105,7 +105,7 @@ else
     unzip -q -o "${work}/ffmpeg.zip" -d "$work"
     unzip -q -o "${work}/ffprobe.zip" -d "$work"
     install -m 755 "${work}/ffmpeg" "${work}/ffprobe" "$dest/"
-    curl -fsSL --retry 3 -o "${dest}/LICENSE.txt" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n${VERSION}/COPYING.GPLv3"
+    curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "${dest}/LICENSE.txt" "https://raw.githubusercontent.com/FFmpeg/FFmpeg/n${VERSION}/COPYING.GPLv3"
     cat > "${dest}/README.txt" << EOF
 FFmpeg ${VERSION}, static GPL build by Martin Riedl (https://ffmpeg.martin-riedl.de)
 Build:   ${MAC_BASE}/${build}/ (ffmpeg.zip SHA-256 ${sha_ffmpeg}, ffprobe.zip SHA-256 ${sha_ffprobe})

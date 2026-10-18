@@ -30,7 +30,7 @@ fetch() { # repo tag file
     local file="$3" path="${tools}/$3"
     if [[ ! -x "$path" ]]; then
         echo "Downloading $file ..."
-        curl -fsSL --retry 3 -o "$path" "https://github.com/$1/releases/download/$2/$file"
+        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "$path" "https://github.com/$1/releases/download/$2/$file"
         chmod +x "$path"
     fi
     local actual
