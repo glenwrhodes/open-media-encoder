@@ -42,4 +42,7 @@ QString recordingDir(); // where new stream recordings are saved
 void setRecordingDir(const QString &dir);
 bool reconnectRecordings(); // start a new part when a stream drops mid-recording
 
+// Speech to text (automatic captions)
+QString whisperCliPath(); // bundled whisper-cli, or one on PATH; empty when missing
+
 } // namespace AppSettings

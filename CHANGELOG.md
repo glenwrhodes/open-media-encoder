@@ -6,6 +6,41 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-10-18
+
+### Added
+- **Target file size**: choose "Target File Size" as the bitrate mode and the output stays under
+  the size you set (for example 10 MB for Discord or 25 MB for email). The bitrate is worked out
+  from the length and encoded in two passes; if the file still comes out too big, it is encoded
+  again a little lower. New "Fit to File Size" presets for Discord, WhatsApp and email.
+- **Target quality (VMAF)**: choose a VMAF score instead of a bitrate (95 looks the same as the
+  source to most viewers). Short test encodes spread through the clip find the quality setting
+  that reaches it with the smallest file. Works with software and GPU encoders; new "Visually
+  Transparent (VMAF 95)" presets for H.264 and HEVC.
+- **Compare before and after**: a new Compare tab in Export Settings test-encodes a few seconds
+  from the playhead and shows it beside the original with a draggable divider, zoom (100–400%)
+  and the test's bitrate, VMAF score, speed and projected file size.
+- **Automatic captions** from the speech in the audio, made offline with whisper.cpp (bundled).
+  Save an `.srt` next to the output, add a subtitle track (MP4, MOV, WebM) and/or burn the
+  captions into the picture, sized for the frame (vertical video included). The language is
+  detected automatically or can be set, and captions can be translated to English. Choose a
+  Fast, Balanced or Best speech model in Preferences > Captions; it downloads on first use and is
+  checked against a pinned SHA-256.
+- **Remove silence**: cuts pauses out of the video and audio together, frame-accurately, with a
+  silence level, shortest pause and padding around speech you can set. New "Talk & Tutorial -
+  Silence Removed" and "Podcast - Silence Removed" presets.
+- **Blurred background** scaling: fit the whole picture into a different frame shape (such as a
+  landscape clip as a vertical Short or Reel) over a blurred, darkened copy of itself instead of
+  black bars or cropping. New Blurred Background presets for YouTube Shorts, TikTok, Instagram
+  Reels, square and 16:9.
+- Command line: `--target-size`, `--target-vmaf`, `--size`, `--scale`, `--remove-silence`,
+  `--captions`, `--language` and `--translate` work on top of any preset.
+- The Encoding panel and the command line show what an encode is doing (finding pauses, finding
+  quality, transcribing, pass 1 of 2), and the log records what each step found.
+
+### Fixed
+- CI downloads retry on any error, so a single failed response no longer fails a build.
+
 ## [1.4.0] - 2026-10-16
 
 ### Added
@@ -126,7 +161,8 @@ First public release.
 - Command-line interface for headless encoding.
 - Windows installer and portable zip with FFmpeg 8.0.1 bundled.
 
-[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/glenwrhodes/open-media-encoder/compare/v1.1.0...v1.2.0

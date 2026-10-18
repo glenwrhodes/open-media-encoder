@@ -86,6 +86,10 @@ if [[ "$count" -lt 50 ]]; then
     exit 1
 fi
 echo "Package smoke test passed (${count} presets available)"
+if ! "${appdir}/usr/bin/whisper-cli" --help 2>&1 | grep -q "usage:"; then
+    echo "Smoke test failed: whisper-cli is missing from the package or doesn't run" >&2
+    exit 1
+fi
 
 (cd "$out" && sha256sum "$(basename "$LDAI_OUTPUT")" "${tarname}.tar.gz" > SHA256SUMS-linux.txt)
 ls -la "$LDAI_OUTPUT" "${out}/${tarname}.tar.gz"

@@ -49,6 +49,8 @@ $presets = & (Join-Path $stage "OpenMediaEncoder.exe") --list-presets | Out-Stri
 $count = ($presets -split "`n" | Where-Object { $_ -match '^sys/' }).Count
 if ($count -lt 40) { throw "Packaged app reported only $count presets; FFmpeg or Qt deployment is broken.`n$presets" }
 Write-Host "Package smoke test passed ($count system presets available)"
+$whisper = & (Join-Path $stage "whisper\whisper-cli.exe") --help 2>&1 | Out-String
+if ($whisper -notmatch "usage:") { throw "whisper-cli is missing from the package or doesn't run (scripts/fetch-whisper.ps1)" }
 
 $zip = Join-Path $OutDir "OpenMediaEncoder-$Version-win64-portable.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

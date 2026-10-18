@@ -20,3 +20,9 @@ Thumbs.db
 # Downloaded at build time by scripts/fetch-ffmpeg.sh
 /third_party/ffmpeg-linux/
 /third_party/ffmpeg-macos/
+
+# Downloaded or built by scripts/fetch-whisper.*
+/third_party/whisper/
+/third_party/whisper-linux/
+/third_party/whisper-macos/
+/third_party/whisper-models/

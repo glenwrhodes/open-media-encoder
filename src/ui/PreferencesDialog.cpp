@@ -1,9 +1,12 @@
 #include "PreferencesDialog.h"
 
+#include "SpeechModelPrompt.h"
 #include "core/AppSettings.h"
 #include "core/EncoderCaps.h"
 #include "core/Formats.h"
+#include "core/MediaInfo.h"
 #include "core/PresetManager.h"
+#include "core/Whisper.h"
 #include "core/YtDlp.h"
 
 #include <QCheckBox>
@@ -198,6 +201,43 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     tabs->addTab(recording, QStringLiteral("Recording"));
     refreshYtDlpInfo();
 
+    // ---- Captions (speech to text)
+    auto *captions = new QWidget;
+    auto *cf = new QFormLayout(captions);
+    auto *capAbout = new QLabel(
+        QStringLiteral("Automatic captions turn speech into text on this computer with whisper.cpp; nothing is "
+                       "uploaded. Turn them on per output in Export Settings > Effects. The speech model is "
+                       "downloaded once, from the official whisper.cpp models on Hugging Face."));
+    capAbout->setObjectName("muted");
+    capAbout->setWordWrap(true);
+    cf->addRow(capAbout);
+    m_speechModel = new QComboBox;
+    for (const Whisper::Model &m : Whisper::models())
+        m_speechModel->addItem(m.label, m.id);
+    m_speechModel->setCurrentIndex(qMax(0, m_speechModel->findData(Whisper::selectedModelId())));
+    auto *getModel = new QPushButton(QStringLiteral("Download"));
+    connect(getModel, &QPushButton::clicked, this, [this] {
+        SpeechModelPrompt::download(this, m_speechModel->currentData().toString());
+        refreshSpeechInfo();
+    });
+    connect(m_speechModel, &QComboBox::currentIndexChanged, this, [this, getModel] {
+        refreshSpeechInfo();
+        const Whisper::Model *m = Whisper::model(m_speechModel->currentData().toString());
+        getModel->setEnabled(m && !Whisper::isInstalled(*m));
+    });
+    auto *mr = new QHBoxLayout;
+    mr->addWidget(m_speechModel, 1);
+    mr->addWidget(getModel);
+    cf->addRow(QStringLiteral("Speech model:"), mr);
+    m_speechInfo = new QLabel;
+    m_speechInfo->setObjectName("muted");
+    m_speechInfo->setWordWrap(true);
+    cf->addRow(QString(), m_speechInfo);
+    tabs->addTab(captions, QStringLiteral("Captions"));
+    refreshSpeechInfo();
+    if (const Whisper::Model *m = Whisper::model(m_speechModel->currentData().toString()))
+        getModel->setEnabled(!Whisper::isInstalled(*m));
+
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, this, &PreferencesDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &PreferencesDialog::reject);
@@ -219,6 +259,7 @@ void PreferencesDialog::accept()
     AppSettings::setValue("encode/hwDecode", m_hwDecode->isChecked());
     AppSettings::setValue("encode/preventSleep", m_preventSleep->isChecked());
     AppSettings::setValue("recorder/reconnect", m_reconnect->isChecked());
+    Whisper::setSelectedModelId(m_speechModel->currentData().toString());
     AppSettings::setYtDlpPath(QDir::fromNativeSeparators(m_ytDlp->text().trimmed()));
     const QString ff = QDir::fromNativeSeparators(m_ffmpeg->text().trimmed());
     if (ff != AppSettings::ffmpegPath()) {
@@ -226,6 +267,22 @@ void PreferencesDialog::accept()
         m_ffmpegChanged = true;
     }
     QDialog::accept();
+}
+
+void PreferencesDialog::refreshSpeechInfo()
+{
+    const Whisper::Model *m = Whisper::model(m_speechModel->currentData().toString());
+    if (!m)
+        return;
+    QStringList lines{m->description};
+    lines << (Whisper::isInstalled(*m) ? QStringLiteral("Downloaded.")
+                                       : QStringLiteral("Not downloaded yet (%1). It downloads the first time an "
+                                                        "output uses automatic captions.")
+                                             .arg(formatBytes(m->size)));
+    if (AppSettings::whisperCliPath().isEmpty())
+        lines << QStringLiteral("whisper-cli wasn't found next to the app, so captions can't be made.");
+    lines << QStringLiteral("Models folder: %1").arg(QDir::toNativeSeparators(Whisper::modelsDir()));
+    m_speechInfo->setText(lines.join('\n'));
 }
 
 void PreferencesDialog::refreshYtDlpInfo()

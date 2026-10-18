@@ -7,6 +7,7 @@
 #include "core/PresetManager.h"
 #include "core/QueueModel.h"
 #include "core/StreamRecorder.h"
+#include "core/Whisper.h"
 #include "core/YtDlp.h"
 #include "ui/MainWindow.h"
 #include "ui/Theme.h"
@@ -18,6 +19,7 @@
 #include <QFileInfo>
 #include <QPainter>
 #include <QPainterPath>
+#include <QRegularExpression>
 #include <QTextStream>
 #include <QTimer>
 #include <QtConcurrent>
@@ -98,6 +100,120 @@ const Preset *findPreset(const QString &key)
     return nullptr;
 }
 
+// Applies --target-size, --captions and the other per-run options on top of a preset.
+bool applyCliOverrides(const QCommandLineParser &parser, ExportSettings &s, QTextStream &err)
+{
+    VideoSettings &v = s.video;
+    EffectsSettings &fx = s.effects;
+    if (parser.isSet("target-size")) {
+        QString text = parser.value("target-size").trimmed();
+        text.remove(QRegularExpression(QStringLiteral("\\s*[Mm][Bb]$")));
+        bool ok = false;
+        v.targetSizeMB = text.toDouble(&ok);
+        if (!ok || v.targetSizeMB <= 0) {
+            err << "--target-size needs a size in MB, e.g. --target-size 10\n";
+            return false;
+        }
+        v.rateControl = QStringLiteral("size");
+        v.maxBitrate = qMax(v.maxBitrate, 16.0);
+    }
+    if (parser.isSet("target-vmaf")) {
+        bool ok = false;
+        v.targetVmaf = parser.value("target-vmaf").toDouble(&ok);
+        if (!ok || v.targetVmaf < 50 || v.targetVmaf > 100) {
+            err << "--target-vmaf needs a score between 50 and 100, e.g. --target-vmaf 95\n";
+            return false;
+        }
+        v.rateControl = QStringLiteral("vmaf");
+    }
+    const VideoCodecDef *def = Formats::videoCodec(v.codec);
+    if ((parser.isSet("target-size") || parser.isSet("target-vmaf")) &&
+        (!def || !def->rateControls.contains(v.rateControl))) {
+        err << "The preset's video codec can't target a " << (v.rateControl == "size" ? "file size" : "VMAF score")
+            << "\n";
+        return false;
+    }
+    if (parser.isSet("size")) {
+        const QStringList wh = parser.value("size").toLower().split('x');
+        v.width = wh.value(0).toInt();
+        v.height = wh.value(1).toInt();
+        if (wh.size() != 2 || v.width <= 0 || v.height <= 0) {
+            err << "--size needs WIDTHxHEIGHT, e.g. --size 1080x1920\n";
+            return false;
+        }
+    }
+    if (parser.isSet("scale")) {
+        const QString mode = parser.value("scale").toLower();
+        if (mode != "fit" && mode != "fill" && mode != "stretch" && mode != "blur") {
+            err << "--scale must be fit, fill, stretch or blur\n";
+            return false;
+        }
+        v.scaleMode = mode;
+    }
+    if (parser.isSet("remove-silence"))
+        fx.removeSilence = true;
+    if (parser.isSet("captions")) {
+        fx.autoCaptions = true;
+        fx.captionSaveSrt = fx.captionEmbed = fx.captionBurn = false;
+        for (const QString &part : parser.value("captions").toLower().split(',', Qt::SkipEmptyParts)) {
+            if (part == "srt")
+                fx.captionSaveSrt = true;
+            else if (part == "embed" || part == "track")
+                fx.captionEmbed = true;
+            else if (part == "burn")
+                fx.captionBurn = true;
+            else {
+                err << "--captions takes srt, embed and/or burn, e.g. --captions srt,burn\n";
+                return false;
+            }
+        }
+    }
+    if (parser.isSet("language"))
+        fx.captionLanguage = parser.value("language").toLower();
+    if (parser.isSet("translate"))
+        fx.captionTranslate = true;
+    if (parser.isSet("language") || parser.isSet("translate"))
+        fx.autoCaptions = true;
+    return true;
+}
+
+// Downloads the selected speech model for --captions when it isn't there yet.
+bool ensureSpeechModelCli(QTextStream &out, QTextStream &err)
+{
+    if (!Whisper::activeModelPath().isEmpty())
+        return true;
+    const Whisper::Model *m = Whisper::model(Whisper::selectedModelId());
+    out << "Downloading the " << m->label << " speech model for captions...\n";
+    out.flush();
+    WhisperModelDownloader downloader;
+    QEventLoop loop;
+    bool ok = false;
+    bool finished = false;
+    QString error;
+    int lastPct = -1;
+    QObject::connect(&downloader, &WhisperModelDownloader::progress, [&](qint64 got, qint64 total) {
+        const int pct = total > 0 ? int(got * 100 / total) : 0;
+        if (pct != lastPct) {
+            lastPct = pct;
+            out << "\r  " << pct << "%   ";
+            out.flush();
+        }
+    });
+    QObject::connect(&downloader, &WhisperModelDownloader::finished, &loop, [&](bool success, const QString &e) {
+        ok = success;
+        error = e;
+        finished = true;
+        loop.quit();
+    });
+    downloader.start(m->id);
+    if (!finished)
+        loop.exec();
+    out << "\n";
+    if (!ok)
+        err << "Couldn't download the speech model: " << error << "\n";
+    return ok;
+}
+
 int runCli(QApplication &app, const QCommandLineParser &parser)
 {
     attachConsole();
@@ -120,6 +236,18 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
     if (!preset) {
         err << "Unknown preset: " << parser.value("preset") << " (use --list-presets)\n";
         return 2;
+    }
+    ExportSettings settings = preset->settings;
+    if (!applyCliOverrides(parser, settings, err))
+        return 2;
+    const bool customised = settings.toJson() != preset->settings.toJson();
+    if (settings.effects.autoCaptions) {
+        if (AppSettings::whisperCliPath().isEmpty()) {
+            err << "Captions need whisper-cli, which wasn't found next to the app\n";
+            return 1;
+        }
+        if (!ensureSpeechModelCli(out, err))
+            return 1;
     }
 
     QueueModel model;
@@ -162,7 +290,7 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
         QString dir;
         if (!outArg.isEmpty() && (sources.size() > 1 || QFileInfo(outArg).isDir()))
             dir = outArg;
-        const QString oid = model.addOutput(sid, preset->settings, preset->id, dir);
+        const QString oid = model.addOutput(sid, settings, customised ? QString() : preset->id, dir);
         if (!outArg.isEmpty() && dir.isEmpty())
             model.setOutputPath(oid, QFileInfo(outArg).absoluteFilePath());
         const double in = parser.isSet("in") ? parser.value("in").toDouble() : -1;
@@ -171,24 +299,36 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
     }
 
     int lastPct = -1;
+    QString lastPhase;
     QObject::connect(&engine, &EncoderEngine::taskStarted, [&](const QString &, const QString &oid) {
         out << "Encoding -> " << QDir::toNativeSeparators(model.output(oid)->finalPath) << "\n";
         out.flush();
         lastPct = -1;
+        lastPhase.clear();
     });
     QObject::connect(&engine, &EncoderEngine::taskProgress, [&](const QString &, const EncodeStats &st) {
         const int pct = int(st.progress * 100);
-        if (pct != lastPct) {
+        if (pct != lastPct || st.phase != lastPhase) {
             lastPct = pct;
-            out << "\r  " << pct << "%  " << QString::number(st.speed, 'f', 2) << "x   ";
+            lastPhase = st.phase;
+            QString line = QStringLiteral("  %1%").arg(pct);
+            if (!st.phase.isEmpty())
+                line += QStringLiteral("  ") + st.phase;
+            if (st.speed > 0)
+                line += QStringLiteral("  %1x").arg(st.speed, 0, 'f', 2);
+            out << "\r" << line.leftJustified(78, ' ', true);
             out.flush();
         }
     });
-    QObject::connect(
-        &engine, &EncoderEngine::taskFinished, [&](const QString &, const QString &, bool ok, const QString &msg) {
-            out << "\r  " << (ok ? QStringLiteral("done") : QStringLiteral("FAILED: ") + msg) << "            \n";
-            out.flush();
-        });
+    QObject::connect(&engine, &EncoderEngine::taskFinished,
+                     [&](const QString &, const QString &oid, bool ok, const QString &msg) {
+                         out << "\r" << QString(78, ' ') << "\r  "
+                             << (ok ? QStringLiteral("done") : QStringLiteral("FAILED: ") + msg) << "\n";
+                         if (ok && !model.output(oid)->message.isEmpty())
+                             for (const QString &note : model.output(oid)->message.split(QStringLiteral("; ")))
+                                 out << "  " << note << "\n";
+                         out.flush();
+                     });
     int exitCode = 0;
     QObject::connect(&engine, &EncoderEngine::queueFinished, [&](int, int failed) {
         exitCode = failed ? 1 : 0;
@@ -369,6 +509,21 @@ int main(int argc, char *argv[])
                       "link"});
     parser.addOption({"duration", QStringLiteral("Stop --record after this many seconds."), "seconds"});
     parser.addOption({"format", QStringLiteral("File format for --record: mkv (default), mp4 or ts."), "format"});
+    parser.addOption({"target-size", QStringLiteral("With --preset: keep each output under this many MB."), "MB"});
+    parser.addOption({"target-vmaf",
+                      QStringLiteral("With --preset: smallest file that still scores this on VMAF (e.g. 95)."),
+                      "score"});
+    parser.addOption({"size", QStringLiteral("With --preset: output frame size, e.g. 1080x1920."), "WxH"});
+    parser.addOption(
+        {"scale", QStringLiteral("With --size: fit, fill, stretch or blur (fit on a blurred background)."), "mode"});
+    parser.addOption({"remove-silence", QStringLiteral("With --preset: cut pauses from the video and audio.")});
+    parser.addOption({"captions",
+                      QStringLiteral("With --preset: generate captions from speech: srt (file next to the output), "
+                                     "embed (subtitle track) and/or burn, comma separated."),
+                      "outputs"});
+    parser.addOption(
+        {"language", QStringLiteral("Spoken language for --captions (e.g. en, fr; default: detect)."), "code"});
+    parser.addOption({"translate", QStringLiteral("Translate --captions to English.")});
     parser.addPositionalArgument(QStringLiteral("files"), QStringLiteral("Media files to add to the queue."),
                                  "[files...]");
     parser.process(app);

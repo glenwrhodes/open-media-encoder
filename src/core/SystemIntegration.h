@@ -13,5 +13,7 @@ bool sleepComputer();
 bool shutDownComputer();
 // Opens the system file manager with `path` selected (or the folder itself when it can't select).
 void revealInFileManager(const QString &path);
+// Pauses (suspend = true) or resumes a running child process. Returns false if that failed.
+bool suspendProcess(qint64 pid, bool suspend);
 
 } // namespace SystemIntegration

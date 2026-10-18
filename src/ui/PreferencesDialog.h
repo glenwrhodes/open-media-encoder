@@ -22,6 +22,7 @@ protected:
 
 private:
     void refreshYtDlpInfo();
+    void refreshSpeechInfo();
 
 private:
     QRadioButton *m_outSource;
@@ -40,5 +41,7 @@ private:
     QCheckBox *m_reconnect;
     QLineEdit *m_ytDlp;
     QLabel *m_ytDlpInfo;
+    QComboBox *m_speechModel;
+    QLabel *m_speechInfo;
     bool m_ffmpegChanged = false;
 };

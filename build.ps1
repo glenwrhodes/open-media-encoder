@@ -21,6 +21,7 @@ $env:QT_ROOT_DIR = $QtDir
 $build = Join-Path $PSScriptRoot "build"
 
 & (Join-Path $PSScriptRoot "scripts\fetch-ffmpeg.ps1")
+& (Join-Path $PSScriptRoot "scripts\fetch-whisper.ps1")
 
 cmake -S $PSScriptRoot -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DCMAKE_PREFIX_PATH=$QtDir"
 if ($LASTEXITCODE) { exit $LASTEXITCODE }

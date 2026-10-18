@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(OpenMediaEncoder
-    VERSION 1.4.0
+    VERSION 1.5.0
     DESCRIPTION "Open-source batch media encoder built on Qt and FFmpeg"
     HOMEPAGE_URL "https://github.com/glenwrhodes/open-media-encoder"
     LANGUAGES CXX)
@@ -97,6 +97,41 @@ else()
                     "until then the app falls back to an ffmpeg on PATH.")
 endif()
 
+# ---------------------------------------------------------------- bundled whisper.cpp
+# whisper-cli turns speech into captions. Windows keeps it with its DLLs in a whisper\ folder next to
+# the executable; on Linux and macOS it is a single static binary next to ffmpeg.
+if(WIN32)
+    set(OME_WHISPER_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper")
+    set(OME_WHISPER_SUBDIR "whisper")
+elseif(APPLE)
+    set(OME_WHISPER_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper-macos")
+    set(OME_WHISPER_SUBDIR "")
+else()
+    set(OME_WHISPER_DEFAULT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper-linux")
+    set(OME_WHISPER_SUBDIR "")
+endif()
+set(OME_WHISPER_DIR "${OME_WHISPER_DEFAULT}" CACHE PATH
+    "Folder containing whisper-cli (and on Windows its DLLs) to bundle (see scripts/fetch-whisper.*)")
+if(WIN32)
+    file(GLOB OME_WHISPER_FILES CONFIGURE_DEPENDS "${OME_WHISPER_DIR}/*.exe" "${OME_WHISPER_DIR}/*.dll")
+elseif(EXISTS "${OME_WHISPER_DIR}/whisper-cli")
+    set(OME_WHISPER_FILES "${OME_WHISPER_DIR}/whisper-cli")
+endif()
+if(OME_WHISPER_FILES)
+    add_custom_target(bundle_whisper ALL
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:OpenMediaEncoder>/${OME_WHISPER_SUBDIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${OME_WHISPER_FILES}
+                "$<TARGET_FILE_DIR:OpenMediaEncoder>/${OME_WHISPER_SUBDIR}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/${OME_WHISPER_SUBDIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${OME_WHISPER_FILES}
+                "${CMAKE_CURRENT_BINARY_DIR}/${OME_WHISPER_SUBDIR}"
+        COMMENT "Copying bundled whisper.cpp")
+    add_dependencies(OpenMediaEncoder bundle_whisper)
+else()
+    message(WARNING "whisper.cpp not found in ${OME_WHISPER_DIR}. Run scripts/fetch-whisper.ps1 (Windows) or "
+                    "scripts/fetch-whisper.sh (Linux/macOS); until then automatic captions are unavailable.")
+endif()
+
 # ---------------------------------------------------------------- install / package layout
 if(WIN32)
     # Flat, portable layout: everything lives next to OpenMediaEncoder.exe.
@@ -126,6 +161,15 @@ if(OME_FFMPEG_FILES)
     install(FILES "${OME_FFMPEG_DIR}/README.txt" DESTINATION ${OME_DOC_DIR}/licenses RENAME FFmpeg-BUILD-README.txt
             OPTIONAL)
 endif()
+if(OME_WHISPER_FILES)
+    if(WIN32)
+        install(PROGRAMS ${OME_WHISPER_FILES} DESTINATION whisper)
+    elseif(OME_BIN_DIR)
+        install(PROGRAMS ${OME_WHISPER_FILES} DESTINATION ${OME_BIN_DIR})
+    endif()
+    install(FILES "${OME_WHISPER_DIR}/LICENSE.txt" DESTINATION ${OME_DOC_DIR}/licenses
+            RENAME whisper.cpp-LICENSE.txt OPTIONAL)
+endif()
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md DESTINATION ${OME_DOC_DIR})
 
 # ---------------------------------------------------------------- tests
@@ -134,8 +178,14 @@ if(OME_BUILD_TESTS)
     enable_testing()
     qt_add_executable(core_tests tests/tst_core.cpp)
     target_link_libraries(core_tests PRIVATE encoder_core Qt6::Test)
+    # Speech model and sample for the captions test (downloaded by CI; the test is skipped without them).
+    target_compile_definitions(core_tests PRIVATE
+        OME_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper-models")
     if(TARGET bundle_ffmpeg)
         add_dependencies(core_tests bundle_ffmpeg)
+    endif()
+    if(TARGET bundle_whisper)
+        add_dependencies(core_tests bundle_whisper)
     endif()
     add_test(NAME core_tests COMMAND core_tests)
     set_tests_properties(core_tests PROPERTIES TIMEOUT 1800)

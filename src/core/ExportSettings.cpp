@@ -12,7 +12,7 @@
 bool EffectsSettings::anyEnabled() const
 {
     return lutEnabled || imageOverlayEnabled || textOverlayEnabled || timecodeEnabled || limiterEnabled ||
-           loudnessEnabled || captionsEnabled || cropEnabled;
+           loudnessEnabled || captionsEnabled || cropEnabled || autoCaptions || removeSilence;
 }
 
 // ---------------------------------------------------------------- JSON
@@ -25,6 +25,8 @@ QJsonObject ExportSettings::toJson() const
         {"width", video.width},
         {"height", video.height},
         {"scaleMode", video.scaleMode},
+        {"blurStrength", video.blurStrength},
+        {"backgroundDim", video.backgroundDim},
         {"frameRate", video.frameRate},
         {"frameRateMode", video.frameRateMode},
         {"fieldOrder", video.fieldOrder},
@@ -37,6 +39,8 @@ QJsonObject ExportSettings::toJson() const
         {"targetBitrate", video.targetBitrate},
         {"maxBitrate", video.maxBitrate},
         {"quality", video.quality},
+        {"targetSizeMB", video.targetSizeMB},
+        {"targetVmaf", video.targetVmaf},
         {"keyframeInterval", video.keyframeInterval},
         {"imageSequence", video.imageSequence},
         {"stillDuration", video.stillDuration},
@@ -79,6 +83,17 @@ QJsonObject ExportSettings::toJson() const
         {"captionsEnabled", e.captionsEnabled},
         {"captionFile", e.captionFile},
         {"captionSize", e.captionSize},
+        {"autoCaptions", e.autoCaptions},
+        {"captionLanguage", e.captionLanguage},
+        {"captionTranslate", e.captionTranslate},
+        {"captionSaveSrt", e.captionSaveSrt},
+        {"captionEmbed", e.captionEmbed},
+        {"captionBurn", e.captionBurn},
+        {"autoCaptionSize", e.autoCaptionSize},
+        {"removeSilence", e.removeSilence},
+        {"silenceThreshold", e.silenceThreshold},
+        {"silenceMinDuration", e.silenceMinDuration},
+        {"silencePadding", e.silencePadding},
         {"cropEnabled", e.cropEnabled},
         {"cropLeft", e.cropLeft},
         {"cropTop", e.cropTop},
@@ -110,6 +125,8 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     vs.width = v.value("width").toInt();
     vs.height = v.value("height").toInt();
     vs.scaleMode = v.value("scaleMode").toString("fit");
+    vs.blurStrength = v.value("blurStrength").toInt(60);
+    vs.backgroundDim = v.value("backgroundDim").toInt(25);
     vs.frameRate = v.value("frameRate").toDouble();
     vs.frameRateMode = v.value("frameRateMode").toString("frame");
     vs.fieldOrder = v.value("fieldOrder").toString("progressive");
@@ -122,6 +139,8 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     vs.targetBitrate = v.value("targetBitrate").toDouble(10.0);
     vs.maxBitrate = v.value("maxBitrate").toDouble(12.0);
     vs.quality = v.value("quality").toInt(23);
+    vs.targetSizeMB = v.value("targetSizeMB").toDouble(10.0);
+    vs.targetVmaf = v.value("targetVmaf").toDouble(95.0);
     vs.keyframeInterval = v.value("keyframeInterval").toInt();
     vs.imageSequence = v.value("imageSequence").toBool(true);
     vs.stillDuration = v.value("stillDuration").toDouble(5.0);
@@ -168,6 +187,17 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     e.captionsEnabled = fx.value("captionsEnabled").toBool();
     e.captionFile = fx.value("captionFile").toString();
     e.captionSize = fx.value("captionSize").toInt(24);
+    e.autoCaptions = fx.value("autoCaptions").toBool();
+    e.captionLanguage = fx.value("captionLanguage").toString("auto");
+    e.captionTranslate = fx.value("captionTranslate").toBool();
+    e.captionSaveSrt = fx.value("captionSaveSrt").toBool(true);
+    e.captionEmbed = fx.value("captionEmbed").toBool();
+    e.captionBurn = fx.value("captionBurn").toBool();
+    e.autoCaptionSize = fx.value("autoCaptionSize").toInt(56);
+    e.removeSilence = fx.value("removeSilence").toBool();
+    e.silenceThreshold = fx.value("silenceThreshold").toDouble(-40.0);
+    e.silenceMinDuration = fx.value("silenceMinDuration").toDouble(0.8);
+    e.silencePadding = fx.value("silencePadding").toDouble(0.2);
     e.cropEnabled = fx.value("cropEnabled").toBool();
     e.cropLeft = fx.value("cropLeft").toInt();
     e.cropTop = fx.value("cropTop").toInt();
@@ -274,11 +304,18 @@ QString ExportSettings::summary(const MediaInfo *source) const
             frame += video.fieldOrder == "tff" ? QStringLiteral(", Upper First") : QStringLiteral(", Lower First");
         else
             frame += QStringLiteral(", Progressive");
+        if (video.scaleMode == "blur" && video.width > 0 && video.height > 0)
+            frame += QStringLiteral(", Blurred Background");
         lines << QStringLiteral("  %1").arg(frame);
 
         const double k = bitrateScale(fps);
         if (video.rateControl == "quality")
             lines << QStringLiteral("  Constant Quality %1").arg(video.quality);
+        else if (video.rateControl == "size")
+            lines << QStringLiteral("  Target File Size: under %1 MB").arg(video.targetSizeMB, 0, 'g', 6);
+        else if (video.rateControl == "vmaf")
+            lines << QStringLiteral("  Target Quality: VMAF %1 (quality found by test encodes)")
+                         .arg(video.targetVmaf, 0, 'g', 4);
         else if (video.rateControl == "cbr")
             lines << QStringLiteral("  CBR, Target %1 Mbps").arg(video.targetBitrate * k, 0, 'f', 1);
         else if (video.rateControl == "vbr1" || video.rateControl == "vbr2")
@@ -330,6 +367,10 @@ QString ExportSettings::summary(const MediaInfo *source) const
         fx << QStringLiteral("Burn-in Captions");
     if (effects.cropEnabled)
         fx << QStringLiteral("Crop");
+    if (effects.autoCaptions)
+        fx << QStringLiteral("Automatic Captions");
+    if (effects.removeSilence)
+        fx << QStringLiteral("Remove Silence");
     if (!fx.isEmpty())
         lines << QStringLiteral("Effects: %1").arg(fx.join(", "));
     return lines.join('\n');
@@ -350,6 +391,8 @@ qint64 ExportSettings::estimateSize(double seconds, const MediaInfo *source) con
         if (fps <= 0)
             fps = 29.97;
         const double scale = (double(w) * h * fps) / (1920.0 * 1080.0 * 29.97);
+        if (video.rateControl == "size")
+            return qint64(video.targetSizeMB * 1e6);
         if (video.rateControl == "cbr" || video.rateControl == "vbr1" || video.rateControl == "vbr2") {
             videoBps = video.targetBitrate * bitrateScale(fps) * 1e6;
         } else if (video.codec == "prores_ks") {

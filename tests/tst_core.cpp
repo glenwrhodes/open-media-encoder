@@ -8,9 +8,11 @@
 #include "core/MediaInfo.h"
 #include "core/MediaInfoCache.h"
 #include "core/PresetManager.h"
+#include "core/QualityProbe.h"
 #include "core/QueueModel.h"
 #include "core/StreamRecorder.h"
 #include "core/WatchFolderManager.h"
+#include "core/Whisper.h"
 
 #include <QColor>
 #include <QDir>
@@ -101,12 +103,21 @@ private slots:
     void recordHlsWithTimeLimit();
     void recordSplitVideoAndAudio();
     void recordDeadLinkFails();
+    void targetFileSize();
+    void targetQualityVmaf();
+    void blurredBackground();
+    void removeSilence();
+    void captionHelpers();
+    void automaticCaptions();
+    void testEncodeCompare();
     void hardwareEncoderCommands(); // keep last: it swaps the encoder list and probes again afterwards
 
 private:
     bool runFfmpeg(const QStringList &args, QString *err = nullptr, int timeoutMs = 180000);
     BuildRequest requestFor(const ExportSettings &s, const QString &out);
     QProcess *startLiveSource(const QStringList &outputArgs, const QStringList &inputs = {});
+    bool runQueue(QueueModel &model, int timeoutMs);
+    QString ffprobe(const QStringList &args);
 
     QTemporaryDir m_dir;
     QString m_clip;
@@ -226,6 +237,22 @@ void CoreTests::jsonRoundTrip()
     s.effects.text = "Hello: world, it's 'quoted'";
     s.effects.cropEnabled = true;
     s.effects.cropLeft = 10;
+    s.video.scaleMode = "blur";
+    s.video.blurStrength = 30;
+    s.video.backgroundDim = 40;
+    s.video.targetSizeMB = 25;
+    s.video.targetVmaf = 93.5;
+    s.effects.autoCaptions = true;
+    s.effects.captionLanguage = "fr";
+    s.effects.captionTranslate = true;
+    s.effects.captionSaveSrt = false;
+    s.effects.captionEmbed = true;
+    s.effects.captionBurn = true;
+    s.effects.autoCaptionSize = 64;
+    s.effects.removeSilence = true;
+    s.effects.silenceThreshold = -35;
+    s.effects.silenceMinDuration = 1.5;
+    s.effects.silencePadding = 0.1;
     const ExportSettings r = ExportSettings::fromJson(s.toJson());
     QCOMPARE(r.toJson(), s.toJson());
 }
@@ -538,6 +565,25 @@ void CoreTests::enginePauseResume()
     QCOMPARE(model.output(oid)->status, OutputStatus::Encoding);
     QVERIFY(finished.wait(900000));
     QCOMPARE(model.output(oid)->status, OutputStatus::Done);
+
+    // Paused before any process runs (an analysis step is next): nothing runs until resumed.
+    QueueModel model2;
+    EncoderEngine engine2(&model2);
+    const QString sid2 = model2.addSource({m_clip});
+    model2.setSourceInfo(sid2, m_info, 0);
+    ExportSettings cut;
+    cut.setFormat("h264");
+    cut.effects.removeSilence = true;
+    const QString oid2 = model2.addOutput(sid2, cut, {}, m_dir.filePath("engine"));
+    QSignalSpy finished2(&engine2, &EncoderEngine::queueFinished);
+    connect(&engine2, &EncoderEngine::taskStarted, &engine2, &EncoderEngine::pause);
+    engine2.start();
+    QVERIFY(!finished2.wait(4000)); // a 2 s clip would be long done if it weren't paused
+    QCOMPARE(model2.output(oid2)->status, OutputStatus::Paused);
+    disconnect(&engine2, &EncoderEngine::taskStarted, &engine2, &EncoderEngine::pause);
+    engine2.resume();
+    QVERIFY(finished2.wait(300000));
+    QCOMPARE(model2.output(oid2)->status, OutputStatus::Done);
 }
 
 void CoreTests::watchFolderPicksUpFiles()
@@ -1153,6 +1199,352 @@ void CoreTests::recordDeadLinkFails()
     QVERIFY(rec->files().isEmpty());
     QVERIFY(QDir(opt.outputDir).entryList(QDir::Files).isEmpty());
     qInfo() << "dead link failed after" << t.elapsed() << "ms:" << rec->error();
+}
+
+bool CoreTests::runQueue(QueueModel &model, int timeoutMs)
+{
+    EncoderEngine engine(&model);
+    QSignalSpy finished(&engine, &EncoderEngine::queueFinished);
+    engine.start();
+    return finished.wait(timeoutMs);
+}
+
+QString CoreTests::ffprobe(const QStringList &args)
+{
+    QProcess p;
+    p.start(AppSettings::ffprobePath(), QStringList{"-v", "error"} + args);
+    p.waitForFinished(60000);
+    return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
+}
+
+void CoreTests::targetFileSize()
+{
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.rateControl = "size";
+    s.video.targetSizeMB = 0.35; // 2 s: about 1.4 Mbps in total
+    s.video.maxBitrate = 100;
+    s.audio.bitrate = 128;
+    QVERIFY(CommandBuilder::usesTwoPass(s));
+
+    BuildRequest req = requestFor(s, m_dir.filePath("size.mp4"));
+    req.outPoint = -1;
+    QString err;
+    const double mbps = CommandBuilder::targetSizeBitrate(req, &err);
+    QVERIFY2(mbps > 0.85 && mbps < 1.1, qPrintable(QString::number(mbps)));
+    const BuildResult r = CommandBuilder::build(req);
+    QVERIFY2(r.ok(), qPrintable(r.error));
+    QVERIFY(r.args.contains("-b:v"));
+
+    // Too small to be possible: a clear error instead of a broken encode.
+    BuildRequest tiny = req;
+    tiny.settings.video.targetSizeMB = 0.01;
+    QCOMPARE(CommandBuilder::targetSizeBitrate(tiny, &err), 0.0);
+    QVERIFY(err.contains("too small"));
+    QVERIFY(!CommandBuilder::build(tiny).ok());
+    // Uncompressed audio has no fixed size.
+    BuildRequest pcm = req;
+    pcm.settings.setFormat("quicktime");
+    pcm.settings.video.codec = "libx264";
+    pcm.settings.video.rateControl = "size";
+    pcm.settings.audio.codec = "pcm_s16le";
+    QVERIFY(!CommandBuilder::build(pcm).ok());
+
+    QueueModel model;
+    const QString sid = model.addSource({m_clip});
+    model.setSourceInfo(sid, m_info, 0);
+    QDir().mkpath(m_dir.filePath("size"));
+    const QString oid = model.addOutput(sid, s, {}, m_dir.filePath("size"));
+    QVERIFY(runQueue(model, 300000));
+    const OutputItem *o = model.output(oid);
+    QVERIFY2(o->status == OutputStatus::Done, qPrintable(o->message));
+    const qint64 size = QFileInfo(o->finalPath).size();
+    QVERIFY2(size <= 350000 && size > 200000, qPrintable(QString::number(size)));
+    QVERIFY(o->message.contains("Target file size"));
+}
+
+void CoreTests::targetQualityVmaf()
+{
+    if (!QualityProbe::vmafAvailable())
+        QSKIP("This FFmpeg build has no libvmaf");
+    // Sample placement: one sample for short clips, several spread over longer ones.
+    BuildRequest r = requestFor(ExportSettings(), {});
+    r.outPoint = -1;
+    QCOMPARE(QualityProbe::sampleRanges(r, 3, 4.0).size(), 1);
+    MediaInfo longInfo = m_info;
+    longInfo.duration = 600;
+    r.source = longInfo;
+    const TimeRanges samples = QualityProbe::sampleRanges(r, 5, 4.0);
+    QCOMPARE(samples.size(), 5);
+    QVERIFY(samples.first().first > 50 && samples.last().second < 560);
+    QCOMPARE(QualityProbe::parseVmafScore("[Parsed_libvmaf_4 @ 0x1] VMAF score: 95.123400\n"), 95.1234);
+
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.rateControl = "vmaf";
+    s.video.targetVmaf = 92;
+    s.video.speedPreset = "veryfast";
+    QueueModel model;
+    const QString sid = model.addSource({m_clip});
+    model.setSourceInfo(sid, m_info, 0);
+    QDir().mkpath(m_dir.filePath("vmaf"));
+    const QString oid = model.addOutput(sid, s, {}, m_dir.filePath("vmaf"));
+    QVERIFY(runQueue(model, 600000));
+    const OutputItem *o = model.output(oid);
+    QVERIFY2(o->status == OutputStatus::Done, qPrintable(o->message));
+    QVERIFY2(o->message.contains("VMAF") && o->message.contains("CRF"), qPrintable(o->message));
+    QVERIFY(QFileInfo(o->finalPath).size() > 0);
+}
+
+void CoreTests::blurredBackground()
+{
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.width = 1080;
+    s.video.height = 1920;
+    s.video.scaleMode = "blur";
+    const QString out = m_dir.filePath("vertical blur.mp4");
+    BuildRequest req = requestFor(s, out);
+    const BuildResult r = CommandBuilder::build(req);
+    QVERIFY2(r.ok(), qPrintable(r.error));
+    QVERIFY(r.args.at(r.args.indexOf("-filter_complex") + 1).contains("gblur"));
+    QString err;
+    QVERIFY2(runFfmpeg(r.args, &err), qPrintable(r.args.join(' ') + "\n" + err));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), out);
+    QCOMPARE(info.width, 1080);
+    QCOMPARE(info.height, 1920);
+
+    // Above the picture is the blurred copy, not black bars.
+    const QString png = m_dir.filePath("blur_frame.png");
+    QVERIFY2(runFfmpeg({"-y", "-i", out, "-frames:v", "1", png}, &err), qPrintable(err));
+    const QImage frame(png);
+    QCOMPARE(frame.size(), QSize(1080, 1920));
+    const QColor top = frame.pixelColor(540, 200);
+    QVERIFY2(top.red() + top.green() + top.blue() > 60, qPrintable(top.name()));
+
+    // The preview shows the same thing.
+    const BuildResult p = CommandBuilder::buildPreview(req, 0.5, m_dir.filePath("blur_preview.bmp"), true);
+    QVERIFY2(p.ok(), qPrintable(p.error));
+    QVERIFY2(runFfmpeg(p.args, &err), qPrintable(err));
+    QCOMPARE(QImage(m_dir.filePath("blur_preview.bmp")).size(), QSize(1080, 1920));
+}
+
+void CoreTests::removeSilence()
+{
+    // Unit: cut list from detected silences.
+    const TimeRanges keep = CommandBuilder::keepRangesFromSilences({{0.0, 0.5}, {2.0, 4.0}, {9.0, 10.0}}, 10.0, 0.2);
+    QCOMPARE(keep.size(), 2);
+    QCOMPARE(keep[0].first, 0.3);
+    QCOMPARE(keep[0].second, 2.2);
+    QCOMPARE(keep[1].first, 3.8);
+    QCOMPARE(keep[1].second, 9.2); // a little of the pause after the speech stays
+
+    // 4 s clip: tone, 2 s of silence, tone.
+    const QString clip = m_dir.filePath("pauses.mp4");
+    QString err;
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=4", "-f", "lavfi", "-i",
+                        "aevalsrc=if(lt(t\\,1)+gte(t\\,3)\\,0.5*sin(2*PI*440*t)\\,0):s=48000:d=4", "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip},
+                       &err),
+             qPrintable(err));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), clip);
+    QVERIFY(info.valid);
+
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.speedPreset = "veryfast";
+    s.effects.removeSilence = true;
+    s.effects.silenceThreshold = -40;
+    s.effects.silenceMinDuration = 0.8;
+    s.effects.silencePadding = 0.2;
+    QueueModel model;
+    const QString sid = model.addSource({clip});
+    model.setSourceInfo(sid, info, 0);
+    QDir().mkpath(m_dir.filePath("silence"));
+    const QString whole = model.addOutput(sid, s, {}, m_dir.filePath("silence"));
+    const QString ranged = model.addOutput(sid, s, {}, m_dir.filePath("silence"));
+    model.setOutputRange(ranged, 0.5, -1); // the cut list is relative to the in point
+    s.setFormat("mp3");
+    s.effects.removeSilence = true;
+    const QString audioOnly = model.addOutput(sid, s, {}, m_dir.filePath("silence"));
+    QVERIFY(runQueue(model, 300000));
+
+    auto check = [&](const QString &oid, double expected) {
+        const OutputItem *o = model.output(oid);
+        QVERIFY2(o->status == OutputStatus::Done, qPrintable(o->message));
+        QVERIFY2(o->message.contains("Remove silence"), qPrintable(o->message));
+        const double v =
+            ffprobe({"-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", o->finalPath})
+                .toDouble();
+        const double a =
+            ffprobe({"-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", o->finalPath})
+                .toDouble();
+        QVERIFY2(qAbs(a - expected) < 0.15, qPrintable(QString("audio %1, expected %2").arg(a).arg(expected)));
+        if (v > 0)
+            QVERIFY2(qAbs(v - a) < 0.1, qPrintable(QString("video %1 vs audio %2").arg(v).arg(a)));
+    };
+    check(whole, 2.4);  // 1 + 0.2 + 0.2 + 1
+    check(ranged, 1.9); // 0.5 + 0.2 + 0.2 + 1
+    check(audioOnly, 2.4);
+
+    // Hundreds of cuts: the filters go through a file (command lines are limited to 32k on Windows),
+    // and video and audio still end up the same length.
+    const QString longClip = m_dir.filePath("many cuts source.mp4");
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=25:d=20", "-f", "lavfi", "-i",
+                        "sine=frequency=330:sample_rate=48000:d=20", "-c:v", "libx264", "-preset", "ultrafast",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", longClip},
+                       &err),
+             qPrintable(err));
+    BuildRequest req = requestFor(PresetManager::instance().find("sys/h264/Match Source - Medium bitrate")->settings,
+                                  m_dir.filePath("many cuts.mp4"));
+    req.inputs = {longClip};
+    req.source = MediaInfo::probe(AppSettings::ffprobePath(), longClip);
+    req.outPoint = -1;
+    req.settings.video.speedPreset = "ultrafast";
+    for (int i = 0; i < 200; ++i)
+        req.keepRanges << qMakePair(i * 0.08, i * 0.08 + 0.04);
+    QVERIFY(qAbs(CommandBuilder::outputDuration(req) - 8.0) < 0.01);
+    const BuildResult r = CommandBuilder::build(req);
+    QVERIFY2(r.ok(), qPrintable(r.error));
+    QVERIFY(r.args.contains("-/filter_complex"));
+    QVERIFY(r.args.contains("-/af"));
+    QVERIFY(r.args.join(' ').size() < 8000);
+    QVERIFY2(runFfmpeg(r.args, &err), qPrintable(r.args.join(' ') + "\n" + err));
+    for (const QString &f : r.tempFiles)
+        QFile::remove(f);
+    const double v =
+        ffprobe({"-select_streams", "v:0", "-show_entries", "stream=duration", "-of", "csv=p=0", req.outputPath})
+            .toDouble();
+    const double a =
+        ffprobe({"-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", req.outputPath})
+            .toDouble();
+    QVERIFY2(qAbs(v - 8.0) < 0.1 && qAbs(a - 8.0) < 0.1, qPrintable(QString("video %1, audio %2").arg(v).arg(a)));
+}
+
+void CoreTests::captionHelpers()
+{
+    const QString srt = m_dir.filePath("raw.srt");
+    {
+        QFile f(srt);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("1\n00:00:00,000 --> 00:00:01,250\n [BLANK_AUDIO]\n\n2\n00:00:01,250 --> 00:00:04,000\n"
+                " Hello {there}, world\n\n3\n00:01:02,500 --> 00:01:03,000\n Second line\n\n");
+    }
+    const QList<Whisper::Cue> cues = Whisper::cleanCues(Whisper::parseSrt(srt));
+    QCOMPARE(cues.size(), 2);
+    QCOMPARE(cues[0].start, 1.25);
+    QCOMPARE(cues[0].text, QString("Hello {there}, world"));
+    QCOMPARE(cues[1].start, 62.5);
+
+    const QString clean = m_dir.filePath("clean.srt");
+    QVERIFY(Whisper::writeSrt(cues, clean));
+    QCOMPARE(Whisper::parseSrt(clean).size(), 2);
+
+    const QString ass = m_dir.filePath("captions.ass");
+    QVERIFY(Whisper::writeAss(cues, ass, QSize(1080, 1920), 56));
+    QFile f(ass);
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QString text = QString::fromUtf8(f.readAll());
+    QVERIFY(text.contains("PlayResX: 1080") && text.contains("PlayResY: 1920"));
+    QVERIFY(text.contains("Dialogue: 0,0:00:01.25,0:00:04.00,Default,,0,0,0,,Hello (there), world"));
+
+    // Burning the ASS file and embedding the SRT both produce valid commands and files.
+    ExportSettings s;
+    s.setFormat("h264");
+    s.effects.autoCaptions = true;
+    s.effects.captionBurn = true;
+    s.effects.captionEmbed = true;
+    BuildRequest req = requestFor(s, m_dir.filePath("caption tracks.mp4"));
+    req.outPoint = 2.0;
+    req.captionsAss = ass;
+    req.captionsSrt = clean;
+    req.captionsLanguage = "en";
+    const BuildResult r = CommandBuilder::build(req);
+    QVERIFY2(r.ok(), qPrintable(r.error));
+    QVERIFY(r.args.contains("mov_text"));
+    QVERIFY(r.args.contains("language=eng"));
+    QString err;
+    QVERIFY2(runFfmpeg(r.args, &err), qPrintable(r.args.join(' ') + "\n" + err));
+    QCOMPARE(ffprobe({"-select_streams", "s", "-show_entries", "stream=codec_name", "-of", "csv=p=0", req.outputPath}),
+             QString("mov_text"));
+    QVERIFY(Formats::videoCodec("libx264")->rateControls.contains("size"));
+    QVERIFY(Formats::videoCodec("libx264")->rateControls.contains("vmaf"));
+    QVERIFY(CommandBuilder::subtitleCodecFor(s) == "mov_text");
+    s.setFormat("mxf");
+    QVERIFY(CommandBuilder::subtitleCodecFor(s).isEmpty());
+}
+
+void CoreTests::automaticCaptions()
+{
+    // Needs whisper-cli (bundled by CMake) and a model plus speech sample in third_party/whisper-models
+    // (CI downloads ggml-tiny-q5_1.bin and whisper.cpp's jfk.wav there).
+    const QDir data(QStringLiteral(OME_TEST_DATA_DIR));
+    const QString model = data.filePath("ggml-tiny-q5_1.bin");
+    const QString speech = data.filePath("jfk.wav");
+    if (AppSettings::whisperCliPath().isEmpty())
+        QSKIP("whisper-cli not bundled (run scripts/fetch-whisper)");
+    if (!QFileInfo::exists(model) || !QFileInfo::exists(speech))
+        QSKIP("No test speech model in third_party/whisper-models");
+    qputenv("OME_WHISPER_MODEL", QFile::encodeName(model));
+
+    const QString clip = m_dir.filePath("speech clip.mp4");
+    QString err;
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=1280x720:r=25:d=11", "-i", speech, "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip},
+                       &err),
+             qPrintable(err));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), clip);
+
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.width = 1080;
+    s.video.height = 1920;
+    s.video.scaleMode = "blur";
+    s.video.speedPreset = "veryfast";
+    s.effects.autoCaptions = true;
+    s.effects.captionSaveSrt = true;
+    s.effects.captionEmbed = true;
+    s.effects.captionBurn = true;
+    QueueModel model2;
+    const QString sid = model2.addSource({clip});
+    model2.setSourceInfo(sid, info, 0);
+    QDir().mkpath(m_dir.filePath("captions"));
+    const QString oid = model2.addOutput(sid, s, {}, m_dir.filePath("captions"));
+    QVERIFY(runQueue(model2, 600000));
+    qunsetenv("OME_WHISPER_MODEL");
+    const OutputItem *o = model2.output(oid);
+    QVERIFY2(o->status == OutputStatus::Done, qPrintable(o->message));
+
+    const QFileInfo out(o->finalPath);
+    const QString srt = out.dir().filePath(out.completeBaseName() + ".srt");
+    const QList<Whisper::Cue> cues = Whisper::parseSrt(srt);
+    QVERIFY2(!cues.isEmpty(), qPrintable(srt));
+    QString all;
+    for (const auto &c : cues)
+        all += c.text + ' ';
+    QVERIFY2(all.contains("country", Qt::CaseInsensitive), qPrintable(all));
+    QCOMPARE(ffprobe({"-select_streams", "s", "-show_entries", "stream=codec_name", "-of", "csv=p=0", o->finalPath}),
+             QString("mov_text"));
+    QVERIFY2(o->message.contains("Captions"), qPrintable(o->message));
+}
+
+void CoreTests::testEncodeCompare()
+{
+    ExportSettings s = PresetManager::instance().find("sys/h264/Match Source - Medium bitrate")->settings;
+    BuildRequest full = requestFor(s, {});
+    full.outPoint = -1;
+    TestEncode test(full, 0.5, 1.0, AppSettings::ffmpegPath());
+    QSignalSpy done(&test, &TestEncode::finished);
+    test.start();
+    QVERIFY(done.count() || done.wait(180000));
+    QVERIFY2(done.first().at(0).toBool(), qPrintable(done.first().at(1).toString()));
+    const TestEncodeResult &res = test.result();
+    QVERIFY(res.bytes > 0);
+    QVERIFY(res.mbps > 0);
+    QVERIFY(res.projected > res.bytes);
+    QVERIFY(QFileInfo::exists(res.file));
+    if (QualityProbe::vmafAvailable())
+        QVERIFY2(res.vmaf > 50 && res.vmaf <= 100.0001, qPrintable(QString::number(res.vmaf)));
 }
 
 void CoreTests::hardwareEncoderCommands()

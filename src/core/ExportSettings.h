@@ -10,7 +10,9 @@ struct VideoSettings {
     QString codec;
     int width = 0; // 0 = match source
     int height = 0;
-    QString scaleMode = "fit";          // fit (letterbox), fill (crop), stretch
+    QString scaleMode = "fit";          // fit (letterbox), fill (crop), stretch, blur (fit on a blurred copy)
+    int blurStrength = 60;              // blur scale mode: 1-100
+    int backgroundDim = 25;             // blur scale mode: darken the background by this percent
     double frameRate = 0.0;             // 0 = match source
     QString frameRateMode = "frame";    // frame sampling, blend, optical (motion interpolation)
     QString fieldOrder = "progressive"; // progressive, tff, bff
@@ -19,10 +21,12 @@ struct VideoSettings {
     QString speedPreset;
     QString profile;
     QString level;
-    QString rateControl = "vbr1";
-    double targetBitrate = 10.0; // Mbps
-    double maxBitrate = 12.0;    // Mbps
+    QString rateControl = "vbr1"; // cbr, vbr1, vbr2, quality, size (target file size), vmaf (target quality)
+    double targetBitrate = 10.0;  // Mbps
+    double maxBitrate = 12.0;     // Mbps; also caps the bitrate chosen for a target file size
     int quality = 23;
+    double targetSizeMB = 10.0;       // rateControl "size": the output stays under this many megabytes (10^6 bytes)
+    double targetVmaf = 95.0;         // rateControl "vmaf": smallest file that still scores this on VMAF
     int keyframeInterval = 0;         // frames, 0 = encoder default
     bool imageSequence = true;        // image formats: sequence vs. single still
     double stillDuration = 5.0;       // seconds of video generated from a still source
@@ -76,6 +80,21 @@ struct EffectsSettings {
     bool captionsEnabled = false; // burn-in subtitles
     QString captionFile;
     int captionSize = 24;
+
+    // Captions generated from the speech in the audio (whisper.cpp, offline).
+    bool autoCaptions = false;
+    QString captionLanguage = "auto"; // spoken language code, or "auto" to detect it
+    bool captionTranslate = false;    // translate the captions to English
+    bool captionSaveSrt = true;       // write an .srt file next to the output
+    bool captionEmbed = false;        // add a subtitle track (MP4, MOV, WebM)
+    bool captionBurn = false;         // burn the captions into the picture
+    int autoCaptionSize = 56;         // burned caption text height in pixels on a 1080-line frame
+
+    // Cut pauses out of the video and audio.
+    bool removeSilence = false;
+    double silenceThreshold = -40.0; // dB; quieter than this counts as silence
+    double silenceMinDuration = 0.8; // seconds of silence before it is cut
+    double silencePadding = 0.2;     // seconds of the pause kept on each side of the speech
 
     bool cropEnabled = false;
     int cropLeft = 0;

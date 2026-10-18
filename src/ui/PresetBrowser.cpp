@@ -163,8 +163,9 @@ void PresetBrowser::reload()
         formatGroups.insert(f.id, g);
     }
     // Platform groups under "Web & Social" in a fixed, familiar order; user groups under "User Presets".
-    static const QStringList platformOrder = {"YouTube",     "Vimeo",    "TikTok",   "Instagram", "Facebook",
-                                              "X (Twitter)", "LinkedIn", "Snapchat", "Pinterest", "Social (Generic)"};
+    static const QStringList platformOrder = {
+        "YouTube",  "Vimeo",    "TikTok",    "Instagram",        "Facebook",        "X (Twitter)",
+        "LinkedIn", "Snapchat", "Pinterest", "Social (Generic)", "Fit to File Size"};
     QHash<QString, QTreeWidgetItem *> webGroups;
     for (const QString &g : platformOrder) {
         auto *item = new QTreeWidgetItem(web, {g});

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/CommandBuilder.h"
 #include "core/ExportSettings.h"
 #include "core/MediaInfo.h"
 
@@ -10,6 +11,7 @@ class FramePreview;
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
+class QFormLayout;
 class QGroupBox;
 class QLabel;
 class QLineEdit;
@@ -20,6 +22,7 @@ class QSpinBox;
 class QTabBar;
 class QTimer;
 class QToolButton;
+class TestEncode;
 class TimelineSlider;
 
 class ExportSettingsDialog : public QDialog
@@ -46,6 +49,7 @@ protected:
     void accept() override;
 
 private:
+    enum View { SourceView = 0, OutputView = 1, CompareView = 2 };
     QWidget *buildPreviewSide();
     QWidget *buildSettingsSide();
     QWidget *buildVideoTab();
@@ -82,6 +86,11 @@ private:
     void updateTimeLabel();
     void setInPoint();
     void setOutPoint();
+    BuildRequest fullRequest() const;
+    void runTestEncode();
+    void clearTestEncode(const QString &message = {});
+    void showCompareFrame();
+    QString testSignature() const;
 
     Mode m_mode;
     ExportSettings m_settings;
@@ -110,6 +119,17 @@ private:
     QGroupBox *m_cropGroup = nullptr;
     QSpinBox *m_cropL = nullptr, *m_cropT = nullptr, *m_cropR = nullptr, *m_cropB = nullptr;
 
+    // before/after comparison
+    QWidget *m_compareBar = nullptr;
+    QPushButton *m_testEncode = nullptr;
+    QComboBox *m_testLength = nullptr;
+    QComboBox *m_zoom = nullptr;
+    QLabel *m_testResult = nullptr;
+    TestEncode *m_test = nullptr;
+    FrameGrabber *m_afterGrabber = nullptr;
+    MediaInfo m_testInfo;
+    QString m_testFor; // testSignature() of the settings the test encode used
+
     // general
     QComboBox *m_format = nullptr;
     QComboBox *m_preset = nullptr;
@@ -130,6 +150,9 @@ private:
     QSpinBox *m_width = nullptr;
     QSpinBox *m_height = nullptr;
     QComboBox *m_scaleMode = nullptr;
+    QFormLayout *m_basicForm = nullptr;
+    QSpinBox *m_blurStrength = nullptr;
+    QSpinBox *m_bgDim = nullptr;
     QComboBox *m_fps = nullptr;
     QComboBox *m_fpsMode = nullptr;
     QComboBox *m_fieldOrder = nullptr;
@@ -140,10 +163,17 @@ private:
     QComboBox *m_level = nullptr;
     QComboBox *m_pixFmt = nullptr;
     QComboBox *m_rc = nullptr;
+    QFormLayout *m_rateForm = nullptr;
     QDoubleSpinBox *m_target = nullptr;
     QDoubleSpinBox *m_max = nullptr;
     QSlider *m_qualitySlider = nullptr;
     QSpinBox *m_quality = nullptr;
+    QWidget *m_qualityRow = nullptr;
+    QWidget *m_sizeRow = nullptr;
+    QDoubleSpinBox *m_targetSize = nullptr;
+    QWidget *m_vmafRow = nullptr;
+    QDoubleSpinBox *m_targetVmaf = nullptr;
+    QLabel *m_rateNote = nullptr;
     QSpinBox *m_gop = nullptr;
     QCheckBox *m_imageSeq = nullptr;
     QDoubleSpinBox *m_stillDuration = nullptr;
@@ -187,6 +217,18 @@ private:
     QGroupBox *m_capGroup = nullptr;
     QLineEdit *m_capPath = nullptr;
     QSpinBox *m_capSize = nullptr;
+    QGroupBox *m_autoCapGroup = nullptr;
+    QComboBox *m_capLanguage = nullptr;
+    QCheckBox *m_capTranslate = nullptr;
+    QCheckBox *m_capSrt = nullptr;
+    QCheckBox *m_capEmbed = nullptr;
+    QCheckBox *m_capBurn = nullptr;
+    QSpinBox *m_autoCapSize = nullptr;
+    QLabel *m_capModel = nullptr;
+    QGroupBox *m_silenceGroup = nullptr;
+    QDoubleSpinBox *m_silenceThreshold = nullptr;
+    QDoubleSpinBox *m_silenceMin = nullptr;
+    QDoubleSpinBox *m_silencePad = nullptr;
 
     // advanced
     QLineEdit *m_vExtra = nullptr;

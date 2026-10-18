@@ -26,6 +26,29 @@ that release.
 
 You can replace the bundled FFmpeg with any other build under *Preferences → FFmpeg*.
 
+## whisper.cpp
+
+Automatic captions use [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (release `b5454`,
+**MIT License**), run as a separate `whisper-cli` program. The license ships in
+`licenses/whisper.cpp-LICENSE.txt`.
+
+- Windows packages contain the project's official x64 CPU build (`whisper\` folder), pinned by
+  SHA-256 in [`scripts/fetch-whisper.ps1`](scripts/fetch-whisper.ps1). It is built with Microsoft
+  Visual C++, so the Visual C++ runtime DLLs it uses (`msvcp140.dll`, `vcruntime140.dll`,
+  `vcruntime140_1.dll`, `vcomp140.dll`) are included next to it, as the Visual C++
+  Redistributable license allows.
+- Linux and macOS packages contain `whisper-cli` built from the pinned source release by
+  [`scripts/fetch-whisper.sh`](scripts/fetch-whisper.sh), unmodified.
+
+## Whisper speech models (downloaded on demand, not bundled)
+
+The speech model is downloaded the first time automatic captions are used, from the official
+whisper.cpp model repository on Hugging Face
+(<https://huggingface.co/ggerganov/whisper.cpp>, pinned revision), and checked against a pinned
+SHA-256. The models are OpenAI's [Whisper](https://github.com/openai/whisper) weights converted
+for whisper.cpp, released under the **MIT License**. They are stored in the app's data folder
+(`Tools/whisper-models`).
+
 ## yt-dlp (downloaded on demand, not bundled)
 
 To record from web pages such as YouTube and Twitch, Open Media Encoder downloads

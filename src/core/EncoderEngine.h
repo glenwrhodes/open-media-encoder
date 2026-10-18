@@ -11,7 +11,7 @@
 class QueueModel;
 
 struct EncodeStats {
-    double progress = 0.0; // 0..1 over all passes
+    double progress = 0.0; // 0..1 over all steps and passes
     double fps = 0.0;
     double speed = 0.0; // x realtime
     qint64 bytes = 0;
@@ -20,9 +20,14 @@ struct EncodeStats {
     double remaining = -1.0; // seconds, -1 unknown
     int pass = 1;
     int passes = 1;
+    QString phase; // what is happening now ("Finding quality...", "Pass 1 of 2"), empty for a plain encode
 };
 
-// Runs a single output through ffmpeg (one or two passes).
+class ProbeRunner;
+class QualitySearch;
+
+// Runs a single output: the analysis steps its settings need (silence scan, quality search,
+// speech-to-text captions), then ffmpeg in one or two passes, then a size check for file-size targets.
 class EncodeTask : public QObject
 {
     Q_OBJECT
@@ -42,16 +47,34 @@ public:
     QString commandLine() const { return m_lastCommand; }
     const EncodeStats &stats() const { return m_stats; }
     QString errorTail() const { return m_stderrTail.join('\n'); }
+    // What the analysis steps found ("CRF 26 reaches VMAF 95.2", "Removed 14 pauses"), for the log.
+    QStringList notes() const { return m_notes; }
+    // Files written next to the output besides the output itself (captions).
+    QStringList extraFiles() const { return m_extraFiles; }
 
 signals:
     void progress(const EncodeStats &stats);
     void finished(bool ok, bool stopped, const QString &error);
 
 private:
+    enum class Step { Silence, Quality, Captions, Encode };
+
+    void nextStep();
+    void detectSilence();
+    void findQuality();
+    void transcribe();
+    void transcribeAudio(const QString &wav);
+    void captionsReady(const QString &srt);
+    void startEncode();
     bool startPass(int pass);
+    void encodeFinished();
     void onReadyStdout();
     void onReadyStderr();
     void onProcessFinished(int exitCode, QProcess::ExitStatus status);
+    void stepProgress(double fraction, const QString &phase);
+    void fail(const QString &error);
+    void succeed();
+    void emitFinished(bool ok, bool stopped, const QString &error);
     void cleanup();
 
     QString m_sourceId;
@@ -59,10 +82,17 @@ private:
     BuildRequest m_req;
     QString m_ffmpeg;
     QProcess *m_proc = nullptr;
+    ProbeRunner *m_runner = nullptr;
+    QualitySearch *m_search = nullptr;
+    QList<Step> m_steps;
+    QList<double> m_weights; // progress share of each step
+    int m_step = -1;
     int m_pass = 0;
     int m_passes = 1;
+    int m_sizeRetries = 0;
     bool m_stopping = false;
     bool m_paused = false;
+    bool m_done = false;
     QElapsedTimer m_timer;
     qint64 m_pausedMs = 0;
     QElapsedTimer m_pauseTimer;
@@ -70,6 +100,9 @@ private:
     QStringList m_stderrTail;
     QStringList m_tempFiles;
     QString m_lastCommand;
+    QString m_captionsSrt; // cleaned captions, copied next to the output when asked for
+    QStringList m_notes;
+    QStringList m_extraFiles;
     EncodeStats m_stats;
 };
 

@@ -495,6 +495,17 @@ QList<VideoCodecDef> buildVideoCodecs()
         c.alphaCapable = true;
         l << c;
     }
+
+    // Every codec with a bitrate can aim for a file size, and every codec with a quality scale can
+    // aim for a VMAF score (the quality value is then found by test-encoding samples).
+    for (VideoCodecDef &c : l) {
+        if (c.rateControls.contains("vbr1"))
+            c.rateControls << "size";
+        if (c.rateControls.contains("quality") && !c.qualityArg.isEmpty() && c.encoder != "mjpeg")
+            c.rateControls << "vmaf";
+        if (c.encoder.endsWith("_videotoolbox"))
+            c.qualityHigherIsBetter = true;
+    }
     return l;
 }
 
@@ -647,6 +658,10 @@ QString rateControlLabel(const QString &rc)
         return QStringLiteral("VBR, 2 pass");
     if (rc == "quality")
         return QStringLiteral("Constant Quality");
+    if (rc == "size")
+        return QStringLiteral("Target File Size");
+    if (rc == "vmaf")
+        return QStringLiteral("Target Quality (VMAF)");
     return QStringLiteral("Codec Default");
 }
 

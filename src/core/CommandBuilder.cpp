@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QUuid>
@@ -80,6 +81,59 @@ QString writeTempText(const QString &dir, const QString &text, QStringList *temp
 }
 
 int nominalFps(double fps) { return qMax(1, int(std::lround(fps))); }
+
+// Silence cuts snapped to the source frame grid, so the video keeps exactly as much time as the
+// audio in every range and the two stay in sync however many cuts there are.
+TimeRanges snappedRanges(const BuildRequest &req)
+{
+    if (req.keepRanges.isEmpty() || req.source.isStill)
+        return {};
+    const double fps = req.source.hasVideo && req.source.fps > 0 ? req.source.fps : 0.0;
+    if (fps <= 0)
+        return req.keepRanges;
+    TimeRanges out;
+    for (const auto &r : req.keepRanges) {
+        const double a = std::round(r.first * fps) / fps;
+        const double b = std::round(r.second * fps) / fps;
+        if (b - a >= 0.5 / fps)
+            out << qMakePair(a, b);
+    }
+    return out;
+}
+
+// Keeps the given ranges of the audio, sample-accurately: each range is trimmed from its own copy and
+// the pieces are joined. (aselect would be simpler, but it passes every audio frame in FFmpeg 8.0.)
+// The graph ends in an unlabeled output, so more filters can follow after a comma.
+QString audioCutGraph(const TimeRanges &keep)
+{
+    auto trim = [](const QPair<double, double> &r) {
+        return QStringLiteral("atrim=start=%1:end=%2,asetpts=PTS-STARTPTS")
+            .arg(QString::number(r.first, 'f', 4), QString::number(r.second, 'f', 4));
+    };
+    if (keep.size() == 1)
+        return trim(keep.first());
+    QString split = QStringLiteral("asplit=%1").arg(keep.size());
+    QString parts;
+    QString joined;
+    for (int i = 0; i < keep.size(); ++i) {
+        split += QStringLiteral("[a%1]").arg(i);
+        parts += QStringLiteral("[a%1]%2[c%1];").arg(i).arg(trim(keep[i]));
+        joined += QStringLiteral("[c%1]").arg(i);
+    }
+    return split + ';' + parts + joined + QStringLiteral("concat=n=%1:v=0:a=1").arg(keep.size());
+}
+
+// ISO 639-2 codes for subtitle track metadata.
+QString iso639_2(const QString &code)
+{
+    static const QHash<QString, QString> map = {
+        {"en", "eng"}, {"es", "spa"}, {"fr", "fre"}, {"de", "ger"}, {"it", "ita"}, {"pt", "por"}, {"nl", "dut"},
+        {"ru", "rus"}, {"pl", "pol"}, {"uk", "ukr"}, {"tr", "tur"}, {"ar", "ara"}, {"he", "heb"}, {"hi", "hin"},
+        {"ja", "jpn"}, {"ko", "kor"}, {"zh", "chi"}, {"sv", "swe"}, {"no", "nor"}, {"da", "dan"}, {"fi", "fin"},
+        {"cs", "cze"}, {"el", "gre"}, {"hu", "hun"}, {"ro", "rum"}, {"id", "ind"}, {"vi", "vie"}, {"th", "tha"},
+    };
+    return map.value(code.toLower());
+}
 
 double sourceFps(const BuildRequest &req)
 {
@@ -180,7 +234,8 @@ QString findDefaultFont()
 bool usesTwoPass(const ExportSettings &s)
 {
     static const QStringList twoPass = {"libx264", "libx265", "libvpx", "libvpx-vp9", "libaom-av1", "mpeg2video"};
-    return s.video.enabled && s.video.rateControl == "vbr2" && twoPass.contains(s.video.codec);
+    const QString rc = s.video.rateControl;
+    return s.video.enabled && (rc == "vbr2" || rc == "size") && twoPass.contains(s.video.codec);
 }
 
 double outputDuration(const BuildRequest &req)
@@ -197,9 +252,117 @@ double outputDuration(const BuildRequest &req)
     }
     if (f && f->imageFormat && !v.imageSequence)
         return 0.0;
+    const TimeRanges kept = snappedRanges(req);
+    if (!kept.isEmpty()) {
+        double sum = 0.0;
+        for (const auto &r : kept)
+            sum += r.second - r.first;
+        return sum;
+    }
     const double in = qMax(0.0, req.inPoint);
     const double out = (req.outPoint > in) ? qMin(req.outPoint, full > 0 ? full : req.outPoint) : full;
     return qMax(0.0, out - in);
+}
+
+QSize outputFrameSize(const BuildRequest &req)
+{
+    const ExportSettings &s = req.settings;
+    const VideoSettings &v = s.video;
+    int w = req.source.displayWidth();
+    int h = req.source.displayHeight();
+    if (s.effects.cropEnabled) {
+        w -= s.effects.cropLeft + s.effects.cropRight;
+        h -= s.effects.cropTop + s.effects.cropBottom;
+    }
+    const bool even = isSubsampled(resolvePixelFormat(s, req.source));
+    auto fix = [even](int x) { return even ? (x & ~1) : x; };
+    if (v.width > 0 && v.height > 0)
+        return {fix(v.width), fix(v.height)};
+    if (w <= 0 || h <= 0)
+        return {};
+    // scale=W:-2 keeps the aspect ratio and rounds the other side to an even number.
+    if (v.width > 0)
+        return {fix(v.width), int(std::lround(double(h) * fix(v.width) / w / 2.0)) * 2};
+    if (v.height > 0)
+        return {int(std::lround(double(w) * fix(v.height) / h / 2.0)) * 2, fix(v.height)};
+    return {fix(w), fix(h)};
+}
+
+double targetSizeBitrate(const BuildRequest &req, QString *error)
+{
+    const ExportSettings &s = req.settings;
+    const FormatDef *fmt = Formats::format(s.format);
+    auto fail = [error](const QString &e) {
+        if (error)
+            *error = e;
+        return 0.0;
+    };
+    const double seconds = outputDuration(req);
+    if (seconds <= 0)
+        return fail(QStringLiteral("The length of the source is unknown, so a file size can't be targeted"));
+    // Leave room for the container (index, headers) so the file lands under the target.
+    const double budget = s.video.targetSizeMB * 1e6 * 8.0 * 0.97 - 64.0 * 1024.0 * 8.0;
+    double audioBits = 0.0;
+    const bool audio = s.audio.enabled && fmt && fmt->hasAudio() && req.source.hasAudio && !s.audio.codec.isEmpty() &&
+                       !req.source.isStill;
+    if (audio) {
+        const AudioCodecDef *a = Formats::audioCodec(s.audio.codec);
+        if (a && a->lossless)
+            return fail(QStringLiteral("Target File Size needs a compressed audio codec: uncompressed audio has no "
+                                       "fixed size"));
+        audioBits = s.audio.bitrate * 1000.0 * seconds;
+    }
+    const double mbps = (budget - audioBits) / seconds / 1e6 * req.sizeScale;
+    if (mbps < 0.05)
+        return fail(QStringLiteral("%1 MB is too small for %2 of video. Choose a larger size, a shorter range or a "
+                                   "lower audio bitrate.")
+                        .arg(num(s.video.targetSizeMB), formatDuration(seconds)));
+    return qMin(mbps, qMax(0.05, s.video.maxBitrate));
+}
+
+TimeRanges keepRangesFromSilences(const TimeRanges &silences, double duration, double padding)
+{
+    TimeRanges keep;
+    double pos = 0.0;
+    for (const auto &sil : silences) {
+        // Keep a little of each pause so speech doesn't start or stop abruptly; a silence touching the
+        // start or end of the clip is cut completely.
+        const double cutStart = sil.first <= 0.001 ? 0.0 : sil.first + padding;
+        const double cutEnd = sil.second >= duration - 0.001 ? duration : sil.second - padding;
+        if (cutEnd - cutStart < 0.1)
+            continue;
+        if (cutStart > pos)
+            keep << qMakePair(pos, cutStart);
+        pos = qMax(pos, cutEnd);
+    }
+    if (duration > pos)
+        keep << qMakePair(pos, duration);
+    TimeRanges out;
+    for (const auto &r : std::as_const(keep))
+        if (r.second - r.first >= 0.05)
+            out << r;
+    return out;
+}
+
+QString rangeSelectExpr(const TimeRanges &ranges)
+{
+    QStringList terms;
+    for (const auto &r : ranges)
+        terms << QStringLiteral("gte(t,%1)*lt(t,%2)")
+                     .arg(QString::number(r.first, 'f', 4), QString::number(r.second, 'f', 4));
+    return terms.join('+');
+}
+
+QString subtitleCodecFor(const ExportSettings &s)
+{
+    const FormatDef *f = Formats::format(s.format);
+    if (!f)
+        return {};
+    if (f->muxer == "mp4" || f->muxer == "mov" || f->muxer == "ipod")
+        return QStringLiteral("mov_text");
+    if (f->muxer == "webm")
+        return QStringLiteral("webvtt");
+    return {};
 }
 
 QString resolvePixelFormat(const ExportSettings &s, const MediaInfo &src)
@@ -364,6 +527,15 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
     if (!preview && (v.deinterlace || (src.isInterlaced() && v.fieldOrder == "progressive")))
         chain << QStringLiteral("yadif=mode=send_frame:parity=auto:deint=all");
 
+    // Remove silence: keep only the ranges found by the silence scan. The frame-rate filter puts every
+    // frame on a fixed grid first so the cut points land exactly on frames.
+    const TimeRanges keep = preview ? TimeRanges() : snappedRanges(req);
+    if (!keep.isEmpty()) {
+        const bool rational = !src.fpsRational.isEmpty() && !src.fpsRational.startsWith(QStringLiteral("0/"));
+        chain << QStringLiteral("fps=%1").arg(rational ? src.fpsRational : fpsToRational(src.fps > 0 ? src.fps : 25.0))
+              << QStringLiteral("select='%1'").arg(rangeSelectExpr(keep)) << QStringLiteral("setpts=N/FRAME_RATE/TB");
+    }
+
     int w = src.displayWidth();
     int h = src.displayHeight();
     if (fx.cropEnabled) {
@@ -394,6 +566,31 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
                       << QStringLiteral("crop=%1:%2").arg(W).arg(H);
             } else if (v.scaleMode == "stretch") {
                 chain << QStringLiteral("scale=%1:%2:flags=%3").arg(W).arg(H).arg(flags);
+            } else if (v.scaleMode == "blur") {
+                // Fit the picture and fill the rest of the frame with a blurred, darkened copy of it
+                // (e.g. a landscape clip in a vertical 9:16 frame). The blur runs at quarter size: the
+                // same look for a fraction of the work.
+                flush(QStringLiteral("[pre]"));
+                const int bw = qMax(2, (W / 4) & ~1);
+                const int bh = qMax(2, (H / 4) & ~1);
+                QString bg = QStringLiteral("[bgsrc]scale=%1:%2:force_original_aspect_ratio=increase:flags=bilinear,"
+                                            "crop=%1:%2,gblur=sigma=%3,scale=%4:%5:flags=bicubic")
+                                 .arg(bw)
+                                 .arg(bh)
+                                 .arg(num(qBound(1, v.blurStrength, 100) * 0.3))
+                                 .arg(W)
+                                 .arg(H);
+                if (v.backgroundDim > 0)
+                    bg += QStringLiteral(",lutyuv=y='(val-16)*%1+16'")
+                              .arg(num(1.0 - qBound(0, v.backgroundDim, 90) / 100.0));
+                stmts << QStringLiteral("[pre]split[bgsrc][fgsrc]") << bg + QStringLiteral(",setsar=1[bg]")
+                      << QStringLiteral(
+                             "[fgsrc]scale=%1:%2:force_original_aspect_ratio=decrease:flags=%3%4,setsar=1[fg]")
+                             .arg(W)
+                             .arg(H)
+                             .arg(flags, needEven ? QStringLiteral(":force_divisible_by=2") : QString());
+                cur = QStringLiteral("[bg][fg]");
+                chain << QStringLiteral("overlay=x=(W-w)/2:y=(H-h)/2");
             } else {
                 chain << QStringLiteral("scale=%1:%2:force_original_aspect_ratio=decrease:flags=%3")
                              .arg(W)
@@ -516,6 +713,16 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
                           escapeFilterValue(QStringLiteral("Fontsize=%1").arg(fx.captionSize)));
     }
 
+    // Captions generated from the audio (styled for this frame size when they were written).
+    if (fx.autoCaptions && fx.captionBurn && !req.captionsAss.isEmpty()) {
+        if (!caps.hasFilter("subtitles")) {
+            if (error)
+                *error = QStringLiteral("This ffmpeg build has no subtitles filter (libass)");
+            return {};
+        }
+        chain << QStringLiteral("subtitles=filename=%1").arg(escapeFilterValue(req.captionsAss));
+    }
+
     if (preview) {
         chain << QStringLiteral("format=bgr24");
         flush(QStringLiteral("[vout]"));
@@ -551,7 +758,23 @@ QString videoFilterGraph(const BuildRequest &req, bool preview, QStringList *tem
 
 namespace {
 
-void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringList &a)
+// Very long filter graphs (hundreds of silence cuts) are passed in a file: Windows limits a command line
+// to 32k characters.
+void appendFilter(QStringList &a, const QString &option, const QString &graph, const BuildRequest &req,
+                  QStringList *tempFiles)
+{
+    if (graph.size() > 4000) {
+        const QString path = writeTempText(req.workDir.isEmpty() ? QDir::tempPath() : req.workDir, graph, tempFiles);
+        if (!path.isEmpty()) {
+            a << QStringLiteral("-/") + option << path;
+            return;
+        }
+    }
+    a << QStringLiteral("-") + option << graph;
+}
+
+// sizeMbps: the bitrate for a target file size (rateControl "size").
+void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, double sizeMbps, QStringList &a)
 {
     const ExportSettings &s = req.settings;
     const VideoSettings &v = s.video;
@@ -574,16 +797,26 @@ void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringLi
 
     // Presets can specify bitrates for <= 30 fps that rise for high-frame-rate output.
     const double k = s.bitrateScale(s.effectiveFrameRate(req.source.fps));
-    const double target = v.targetBitrate * k;
-    const double maxRate = qMax(v.maxBitrate, v.targetBitrate) * k;
+    double target = v.targetBitrate * k;
+    double maxRate = qMax(v.maxBitrate, v.targetBitrate) * k;
+    QString rc = def && def->rateControls.contains(v.rateControl) ? v.rateControl
+                 : def                                            ? def->defaultRateControl
+                                                                  : v.rateControl;
+    if (rc == "size") {
+        // Target file size: an average bitrate worked out from the length, in two passes where the
+        // encoder has them. Peaks may go above it; the average is what sets the size.
+        target = sizeMbps;
+        maxRate = sizeMbps * 2.0;
+        rc = usesTwoPass(s) || isNvenc(c) ? QStringLiteral("vbr2") : QStringLiteral("vbr1");
+    } else if (rc == "vmaf") {
+        // Target quality: encodes at the quality value the VMAF search found (the codec default until then).
+        rc = QStringLiteral("quality");
+    }
     const QString T = kbps(target);
     const QString M = kbps(maxRate);
     const QString Tbuf = kbps(target * 2);
     const QString Mbuf = kbps(maxRate * 2);
     const QString Q = QString::number(v.quality);
-    const QString rc = def && def->rateControls.contains(v.rateControl) ? v.rateControl
-                       : def                                            ? def->defaultRateControl
-                                                                        : v.rateControl;
 
     if (isNvenc(c)) {
         if (rc == "cbr")
@@ -676,7 +909,7 @@ void appendVideoCodecArgs(const BuildRequest &req, const QString &pix, QStringLi
         a << QProcess::splitCommand(v.extraArgs);
 }
 
-void appendAudioArgs(const BuildRequest &req, QStringList &a)
+void appendAudioArgs(const BuildRequest &req, QStringList &a, QStringList *tempFiles)
 {
     const AudioSettings &au = req.settings.audio;
     const EffectsSettings &fx = req.settings.effects;
@@ -702,10 +935,15 @@ void appendAudioArgs(const BuildRequest &req, QStringList &a)
     if (ch > 0)
         a << "-ac" << QString::number(ch);
 
+    QStringList af;
+    const TimeRanges keep = snappedRanges(req);
+    if (!keep.isEmpty()) // remove silence
+        af << audioCutGraph(keep);
     if (fx.loudnessEnabled)
-        a << "-af"
-          << QStringLiteral("loudnorm=I=%1:TP=%2:LRA=%3")
-                 .arg(num(fx.loudnessTarget), num(fx.truePeak), num(fx.loudnessRange));
+        af << QStringLiteral("loudnorm=I=%1:TP=%2:LRA=%3")
+                  .arg(num(fx.loudnessTarget), num(fx.truePeak), num(fx.loudnessRange));
+    if (!af.isEmpty())
+        appendFilter(a, QStringLiteral("af"), af.join(','), req, tempFiles);
     if (!au.extraArgs.trimmed().isEmpty())
         a << QProcess::splitCommand(au.extraArgs);
 }
@@ -727,6 +965,31 @@ QString writeConcatList(const BuildRequest &req, QStringList *tempFiles)
     f.close();
     tempFiles->append(path);
     return path;
+}
+
+// The input options: stitched list, looped still, or a single file with its in point.
+bool appendInputs(const BuildRequest &req, bool stillToVideo, BuildResult &r)
+{
+    QStringList &a = r.args;
+    if (req.inputs.size() > 1) {
+        const QString list = writeConcatList(req, &r.tempFiles);
+        if (list.isEmpty()) {
+            r.error = QStringLiteral("Could not write concat list");
+            return false;
+        }
+        if (req.inPoint > 0)
+            a << "-ss" << num(req.inPoint);
+        a << "-f" << "concat" << "-safe" << "0" << "-i" << list;
+    } else if (stillToVideo) {
+        const double fps = req.settings.video.frameRate > 0 ? req.settings.video.frameRate : 30.0;
+        a << "-loop" << "1" << "-framerate" << fpsToRational(fps) << "-t" << num(r.duration) << "-i"
+          << req.inputs.first();
+    } else {
+        if (req.inPoint > 0 && !req.source.isStill)
+            a << "-ss" << num(req.inPoint);
+        a << req.inputArgs << "-i" << req.inputs.first();
+    }
+    return true;
 }
 
 } // namespace
@@ -771,9 +1034,22 @@ BuildResult build(const BuildRequest &req)
         return r;
     }
 
+    double sizeMbps = 0.0;
+    if (doVideo && s.video.rateControl == "size") {
+        QString err;
+        sizeMbps = targetSizeBitrate(req, &err);
+        if (sizeMbps <= 0) {
+            r.error = err;
+            return r;
+        }
+    }
+
     r.duration = outputDuration(req);
     const bool stillToVideo = src.isStill && !fmt->imageFormat;
     const bool singleFrame = fmt->imageFormat && (!s.video.imageSequence || src.isStill);
+    const QString subCodec = subtitleCodecFor(s);
+    const bool embedCaptions = req.pass != 1 && s.effects.autoCaptions && s.effects.captionEmbed &&
+                               !subCodec.isEmpty() && !req.captionsSrt.isEmpty();
 
     QStringList &a = r.args;
     a << "-hide_banner" << "-nostdin" << "-y" << "-loglevel" << "warning" << "-progress" << "pipe:1" << "-nostats";
@@ -783,26 +1059,16 @@ BuildResult build(const BuildRequest &req)
         a << "-hwaccel" << "auto";
     if (doVideo)
         a << hardwareDeviceArgs(s.video.codec);
-    if (req.inputs.size() > 1) {
-        const QString list = writeConcatList(req, &r.tempFiles);
-        if (list.isEmpty()) {
-            r.error = QStringLiteral("Could not write concat list");
-            return r;
-        }
-        if (req.inPoint > 0)
-            a << "-ss" << num(req.inPoint);
-        a << "-f" << "concat" << "-safe" << "0" << "-i" << list;
-    } else if (stillToVideo) {
-        const double fps = s.video.frameRate > 0 ? s.video.frameRate : 30.0;
-        a << "-loop" << "1" << "-framerate" << fpsToRational(fps) << "-t" << num(r.duration) << "-i"
-          << req.inputs.first();
-    } else {
-        if (req.inPoint > 0 && !src.isStill)
-            a << "-ss" << num(req.inPoint);
-        a << req.inputArgs << "-i" << req.inputs.first();
-    }
-    if (doVideo && s.effects.imageOverlayEnabled && !s.effects.imagePath.isEmpty())
+    if (!appendInputs(req, stillToVideo, r))
+        return r;
+    int nextInput = 1;
+    if (doVideo && s.effects.imageOverlayEnabled && !s.effects.imagePath.isEmpty()) {
         a << "-i" << s.effects.imagePath;
+        ++nextInput;
+    }
+    const int captionInput = embedCaptions ? nextInput++ : -1;
+    if (captionInput >= 0)
+        a << "-i" << req.captionsSrt;
 
     // ---- streams
     if (doVideo) {
@@ -812,16 +1078,25 @@ BuildResult build(const BuildRequest &req)
             r.error = err;
             return r;
         }
-        a << "-filter_complex" << graph << "-map" << "[vout]";
-        appendVideoCodecArgs(req, resolvePixelFormat(s, src), a);
+        appendFilter(a, QStringLiteral("filter_complex"), graph, req, &r.tempFiles);
+        a << "-map" << "[vout]";
+        appendVideoCodecArgs(req, resolvePixelFormat(s, src), sizeMbps, a);
     } else {
         a << "-vn";
     }
     if (doAudio)
-        appendAudioArgs(req, a);
+        appendAudioArgs(req, a, &r.tempFiles);
     else
         a << "-an";
-    a << "-sn" << "-dn";
+    if (captionInput >= 0) {
+        a << "-map" << QStringLiteral("%1:s:0").arg(captionInput) << "-c:s" << subCodec;
+        const QString lang = iso639_2(s.effects.captionTranslate ? QStringLiteral("en") : req.captionsLanguage);
+        if (!lang.isEmpty())
+            a << "-metadata:s:s:0" << QStringLiteral("language=%1").arg(lang);
+        a << "-dn";
+    } else {
+        a << "-sn" << "-dn";
+    }
 
     if (!src.isStill && req.outPoint > 0 && r.duration > 0)
         a << "-t" << num(r.duration);
@@ -849,6 +1124,37 @@ BuildResult build(const BuildRequest &req)
     if (fmt->imageFormat && !singleFrame)
         a << "-start_number" << "0";
     a << "-f" << fmt->muxer << req.outputPath;
+    return r;
+}
+
+BuildResult buildAudioExtract(const BuildRequest &req, const QString &audioFilter, const QStringList &outputArgs)
+{
+    BuildResult r;
+    if (req.inputs.isEmpty()) {
+        r.error = QStringLiteral("No input file");
+        return r;
+    }
+    if (!req.source.hasAudio) {
+        r.error = QStringLiteral("The source has no audio");
+        return r;
+    }
+    r.duration = outputDuration(req);
+    QStringList &a = r.args;
+    a << "-hide_banner" << "-nostdin" << "-y" << "-loglevel" << "info" << "-progress" << "pipe:1" << "-nostats";
+    if (!appendInputs(req, false, r))
+        return r;
+    a << "-map" << "0:a:0" << "-vn" << "-sn" << "-dn";
+    QStringList af;
+    const TimeRanges keep = snappedRanges(req);
+    if (!keep.isEmpty())
+        af << audioCutGraph(keep);
+    if (!audioFilter.isEmpty())
+        af << audioFilter;
+    if (!af.isEmpty())
+        appendFilter(a, QStringLiteral("af"), af.join(','), req, &r.tempFiles);
+    if (!req.source.isStill && req.outPoint > 0 && r.duration > 0)
+        a << "-t" << num(r.duration);
+    a << outputArgs;
     return r;
 }
 

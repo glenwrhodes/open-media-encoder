@@ -169,4 +169,19 @@ QString recordingDir()
 void setRecordingDir(const QString &dir) { setValue("recorder/folder", dir); }
 bool reconnectRecordings() { return value("recorder/reconnect", true).toBool(); }
 
+QString whisperCliPath()
+{
+    const QString configured = value("tools/whisper").toString();
+    if (!configured.isEmpty() && QFileInfo::exists(configured))
+        return configured;
+    // Windows keeps whisper-cli and its DLLs in their own folder; elsewhere it is one static binary.
+    const QDir app(QCoreApplication::applicationDirPath());
+    for (const QString &rel : {QStringLiteral("whisper/"), QString()}) {
+        const QString p = app.filePath(rel + exeName(QStringLiteral("whisper-cli")));
+        if (QFileInfo::exists(p))
+            return p;
+    }
+    return findTool(QStringLiteral("whisper-cli"));
+}
+
 } // namespace AppSettings

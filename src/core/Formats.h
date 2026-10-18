@@ -19,12 +19,13 @@ struct VideoCodecDef {
     QStringList levels;       // "auto" first when present
     QStringList pixelFormats; // selectable output pixel formats ("" = auto is implicit)
     QString defaultPixelFormat;
-    QStringList rateControls; // subset of: cbr, vbr1, vbr2, quality, none
+    QStringList rateControls; // subset of: cbr, vbr1, vbr2, quality, size, vmaf, none
     QString defaultRateControl;
     QString qualityArg; // e.g. "-crf", "-cq", "-q:v"
     int qualityMin = 0;
     int qualityMax = 51;
     int defaultQuality = 23;
+    bool qualityHigherIsBetter = false; // VideoToolbox's -q:v; CRF-style scales are lower = better
     bool alphaCapable = false;
 
     QString profileLabel(const QString &profile) const;

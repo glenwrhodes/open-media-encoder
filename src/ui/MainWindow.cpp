@@ -6,6 +6,7 @@
 #include "PreferencesDialog.h"
 #include "PresetBrowser.h"
 #include "QueuePanel.h"
+#include "SpeechModelPrompt.h"
 #include "StreamRecorderPanel.h"
 #include "TaskbarProgress.h"
 #include "Theme.h"
@@ -162,7 +163,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_queue, &QueuePanel::addOutputClicked, this, &MainWindow::addOutputToSelection);
     connect(m_queue, &QueuePanel::duplicateClicked, this, &MainWindow::duplicateSelection);
     connect(m_queue, &QueuePanel::removeClicked, this, &MainWindow::removeSelection);
-    connect(m_queue, &QueuePanel::startClicked, m_engine, &EncoderEngine::start);
+    connect(m_queue, &QueuePanel::startClicked, this, &MainWindow::startQueue);
     connect(m_queue, &QueuePanel::pauseClicked, m_engine, &EncoderEngine::pause);
     connect(m_queue, &QueuePanel::stopClicked, this, &MainWindow::stopQueue);
     connect(m_queue, &QueuePanel::editOutputRequested, this, &MainWindow::editOutput);
@@ -176,7 +177,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
     auto *startShortcut =
         new QShortcut(QKeySequence(Qt::Key_Return), m_queue->view(), nullptr, nullptr, Qt::WidgetShortcut);
-    connect(startShortcut, &QShortcut::activated, m_engine, &EncoderEngine::start);
+    connect(startShortcut, &QShortcut::activated, this, &MainWindow::startQueue);
     auto *delShortcut = new QShortcut(QKeySequence::Delete, m_queue->view(), nullptr, nullptr, Qt::WidgetShortcut);
     connect(delShortcut, &QShortcut::activated, this, &MainWindow::removeSelection);
     auto *upShortcut =
@@ -310,8 +311,8 @@ void MainWindow::buildMenus()
     file->addAction(Theme::icon("record", QColor(0xe5, 0x48, 0x48)), QStringLiteral("Record Stream…"),
                     QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_R), this, &MainWindow::showRecorder);
     file->addSeparator();
-    file->addAction(Theme::icon("play"), QStringLiteral("Start Queue"), QKeySequence(Qt::CTRL | Qt::Key_Return),
-                    m_engine, &EncoderEngine::start);
+    file->addAction(Theme::icon("play"), QStringLiteral("Start Queue"), QKeySequence(Qt::CTRL | Qt::Key_Return), this,
+                    &MainWindow::startQueue);
     file->addAction(Theme::icon("pause"), QStringLiteral("Pause Queue"), m_engine, &EncoderEngine::pause);
     file->addAction(Theme::icon("stop"), QStringLiteral("Stop Queue"), QKeySequence(Qt::CTRL | Qt::Key_Period), this,
                     &MainWindow::stopQueue);
@@ -1048,6 +1049,19 @@ void MainWindow::onWatchFilesReady(const QString &folderId, const QStringList &f
         QStringLiteral("Watch folder: queued %1 file%2").arg(files.size()).arg(files.size() == 1 ? "" : "s"), 5000);
     if (AppSettings::autoEncodeWatchFolders())
         m_engine->start();
+}
+
+void MainWindow::startQueue()
+{
+    // Outputs with automatic captions need the speech model: offer it now rather than fail them.
+    bool needsSpeech = false;
+    for (const SourceItem &s : m_model->sources())
+        for (const OutputItem &o : s.outputs)
+            if (o.status == OutputStatus::Ready && o.settings.effects.autoCaptions)
+                needsSpeech = true;
+    if (needsSpeech && !m_engine->isRunning())
+        SpeechModelPrompt::ensureInstalled(this);
+    m_engine->start();
 }
 
 void MainWindow::onQueueFinished(int done, int failed)

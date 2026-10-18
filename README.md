@@ -7,7 +7,9 @@
 <p align="center">
   <strong>A free, open-source batch media encoder for Windows and Linux, built on Qt 6 and FFmpeg.</strong><br>
   Queue up your media, pick presets, add LUTs, overlays and loudness normalization, and encode
-  to H.264, HEVC, AV1, ProRes, DNxHR and more, with GPU acceleration.
+  to H.264, HEVC, AV1, ProRes, DNxHR and more, with GPU acceleration.<br>
+  Hit an exact file size or quality score, compare before and after, cut out silences, and caption
+  speech automatically, all offline.
 </p>
 
 <p align="center">
@@ -35,7 +37,7 @@
 | `OpenMediaEncoder-x.y.z-x86_64.AppImage` | You're on Linux: `chmod +x` the file and run it. |
 | `OpenMediaEncoder-x.y.z-linux-x86_64.tar.gz` | You're on Linux without FUSE (some containers): extract and run `open-media-encoder`. |
 
-Everything is included, **FFmpeg too**, so there is nothing else to install.
+Everything is included, **FFmpeg and whisper.cpp too**, so there is nothing else to install.
 
 - **Windows:** 64-bit Windows 10 or 11. GPU encoding needs NVIDIA driver 570 or newer (NVENC), a
   recent Intel graphics driver (Quick Sync) or an AMD driver (AMF).
@@ -77,15 +79,51 @@ The app detects what your machine supports and falls back to software encoding a
 
 - Source/Output preview rendered through the real filter graph. Set In/Out (I/O keys) and crop on
   the Source tab; the Output tab scrubs exactly the range that will be encoded.
-- Frame size with fit, fill or stretch scaling; frame-rate conversion (sampling, blending, optical flow); field order and deinterlacing.
-- Codec controls: speed preset, profile, level, pixel format, CBR / VBR 1-pass / VBR 2-pass / constant quality, keyframe distance.
+- Frame size with fit, fill, stretch or **blurred background** scaling; frame-rate conversion (sampling, blending, optical flow); field order and deinterlacing.
+- Codec controls: speed preset, profile, level, pixel format, CBR / VBR 1-pass / VBR 2-pass / constant quality / target file size / target VMAF, keyframe distance.
 - Audio codec, sample rate, channels and bitrate, plus an estimated file size and the exact FFmpeg command it will run.
+
+**Smart encoding**
+
+<img src="docs/images/compare.png" alt="Compare view: the original and a test encode side by side across a draggable divider, with the test's bitrate, VMAF score and projected file size" width="100%">
+
+- **Target file size:** "Keep it under 10 MB for Discord" or "25 MB for email". The bitrate is
+  worked out from the length and encoded in two passes; if the file still comes out too big, it's
+  encoded again a little lower. Presets for Discord, WhatsApp and email are included.
+- **Target quality (VMAF):** pick a score instead of a bitrate, e.g. 95 ("looks the same as the
+  source"). Short test encodes spread through the clip are measured with
+  [VMAF](https://github.com/Netflix/vmaf), Netflix's perceptual quality metric, to find the
+  smallest file that still reaches it. Works with software and GPU encoders.
+- **Compare before and after:** the Compare tab encodes a few seconds from the playhead with your
+  settings and shows them next to the original. Drag the divider, zoom to 100–400% to see
+  compression detail, and read the test's bitrate, VMAF score and projected file size.
+
+**Vertical video with a blurred background**
+
+<img src="docs/images/vertical-captions.png" alt="A landscape clip in a vertical 9:16 frame over a blurred copy of itself, with automatic captions burned in" width="220" align="right">
+
+- Fit the whole picture into a different shape (a landscape clip as a 9:16 Short or Reel, or a
+  vertical phone video in a 16:9 frame) and fill the rest with a blurred, darkened copy of it
+  instead of black bars or cropping. Blur strength and darkening are adjustable.
+- Ready-made presets for YouTube Shorts, TikTok, Instagram Reels, square feeds and 16:9.
+
+**Automatic captions**
+- Speech becomes captions on your computer with [whisper.cpp](https://github.com/ggml-org/whisper.cpp);
+  nothing is uploaded. Save an `.srt` next to the output, add a subtitle track viewers can turn on
+  (MP4, MOV, WebM), and/or burn the captions into the picture, sized for the frame.
+- Detects the spoken language (or pick one of 28), and can translate to English.
+- The speech model (82 MB to 574 MB, your choice in Preferences) downloads once, on first use.
+
+**Remove silence**
+- Cuts the pauses out of talks, tutorials, screen recordings and podcasts, from video and audio
+  together and frame-accurately. Set how quiet counts as silence, the shortest pause to cut, and how
+  much breathing room to keep around speech.
 
 **Effects**
 - 3D LUTs (`.cube`, `.3dl`), image overlay / watermark, text overlay, timecode burn-in.
 - Broadcast-safe video limiter.
 - Loudness normalization to EBU R128, ATSC A/85, streaming or podcast targets.
-- Burned-in captions from `.srt`, `.ass` or `.vtt`.
+- Burned-in captions from `.srt`, `.ass` or `.vtt` files (or generated from the speech, as above).
 
 **Formats and presets**
 
@@ -100,10 +138,13 @@ The app detects what your machine supports and falls back to software encoding a
 **Web & Social presets** for YouTube (4K to 480p, Shorts), Vimeo, TikTok, Instagram (Reels,
 Stories, feed), Facebook, X, LinkedIn, Snapchat and Pinterest follow each platform's recommended
 settings. Drag a movie into the queue, drop "YouTube 720p HD" on it, and press Start. Vertical
-presets crop landscape footage to fill, and bitrates rise automatically for 60 fps sources.
+presets crop landscape footage to fill (or use the Blurred Background variants), and bitrates rise
+automatically for 60 fps sources. **Fit to File Size** presets keep uploads under Discord, WhatsApp
+and email limits.
 
-Altogether there are 120+ presets, including ProRes/DNxHR mastering and GPU encoding. You can
-save, import and share your own presets as JSON files.
+Altogether there are 125+ presets, including ProRes/DNxHR mastering, GPU encoding, "Visually
+Transparent (VMAF 95)" and a silence-removing podcast preset. You can save, import and share your
+own presets as JSON files.
 
 **Stream Recorder**
 - Paste a link to a live stream and press **Record**. It saves the stream to disk as it plays.
@@ -134,6 +175,18 @@ OpenMediaEncoder.exe --preset "H.264/Match Source - High bitrate" --stitch -o re
 OpenMediaEncoder.exe --preset "TikTok 1080x1920" --sequence --fps 30 -o title.mp4 renders\title_0001.png
 ```
 
+Smart encoding options work on top of any preset:
+
+```powershell
+OpenMediaEncoder.exe --preset "H.264/Match Source - High bitrate" --target-size 10 -o clip-for-discord.mp4 clip.mov
+OpenMediaEncoder.exe --preset "HEVC/HD 1080p" --target-vmaf 95 -o archive.mp4 input.mov
+OpenMediaEncoder.exe --preset "YouTube 1080p HD" --remove-silence --captions srt,embed -o lesson.mp4 lesson.mov
+OpenMediaEncoder.exe --preset "YouTube Shorts 1080x1920" --size 1080x1920 --scale blur --captions burn -o short.mp4 talk.mp4
+```
+
+`--captions` takes any of `srt`, `embed` and `burn`; add `--language fr` to set the spoken language
+or `--translate` for English captions. The speech model is downloaded the first time it's needed.
+
 Record a live stream (Ctrl+C stops it and keeps what was recorded):
 
 ```powershell
@@ -157,7 +210,7 @@ CMake, Ninja and MinGW for you.
 ```powershell
 git clone https://github.com/glenwrhodes/open-media-encoder.git
 cd open-media-encoder
-.\build.ps1 -Test                 # downloads the pinned FFmpeg, builds, runs the test suite
+.\build.ps1 -Test                 # downloads the pinned FFmpeg and whisper.cpp, builds, runs the tests
 .\build\OpenMediaEncoder.exe
 ```
 
@@ -170,6 +223,7 @@ release pipeline (the installer needs [Inno Setup 6](https://jrsoftware.org/isin
 
 ```powershell
 .\scripts\fetch-ffmpeg.ps1
+.\scripts\fetch-whisper.ps1
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:\Qt\6.10.2\msvc2022_64
 cmake --build build
 ctest --test-dir build --output-on-failure
@@ -185,6 +239,8 @@ and a C++17 compiler. On Ubuntu/Debian: `sudo apt install build-essential ninja-
 
 ```bash
 ./scripts/fetch-ffmpeg.sh            # pinned static FFmpeg 8.0.1, verified by SHA-256
+./scripts/fetch-whisper.sh           # builds the pinned whisper.cpp (speech to text) from source
+./scripts/fetch-test-data.sh         # optional: small speech model for the captions test
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=~/Qt/6.10.2/gcc_64
 cmake --build build
 QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
@@ -196,18 +252,19 @@ QT_QPA_PLATFORM=offscreen ctest --test-dir build --output-on-failure
 
 The code builds and the test suite passes on macOS (CI checks every change), but there is no
 signed package yet. To try it: `brew install qt ninja`, then the same commands as Linux
-(`scripts/fetch-ffmpeg.sh` fetches a pinned FFmpeg 8.0.1 for Apple silicon or Intel); the app is
-`build/Open Media Encoder.app`.
+(`scripts/fetch-ffmpeg.sh` fetches a pinned FFmpeg 8.0.1 for Apple silicon or Intel, and
+`scripts/fetch-whisper.sh` builds whisper.cpp with Metal); the app is `build/Open Media Encoder.app`.
 
 ## How it works
 
 ```
 src/core   UI-free engine: format/codec registry, export settings, ffprobe probing, the FFmpeg
            command builder (filter graphs, rate control, two-pass), presets, queue model,
-           encoding engine, watch folders, stream recorder
+           encoding engine (with silence, VMAF and speech-to-text steps), watch folders,
+           stream recorder
 src/ui     Qt Widgets front end: main window and panels, Export Settings dialog, preferences
 tests      Integration tests that run real encodes through FFmpeg for every preset and effect
-scripts    FFmpeg fetch (pinned + checksummed) and packaging
+scripts    FFmpeg and whisper.cpp fetch (pinned + checksummed) and packaging
 installer  Inno Setup script for the Windows installer
 ```
 
@@ -244,8 +301,8 @@ Security issues: please see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Open Media Encoder is [MIT licensed](LICENSE). Release packages bundle FFmpeg (GPLv3) and Qt
-(LGPLv3) as separate components; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Open Media Encoder is [MIT licensed](LICENSE). Release packages bundle FFmpeg (GPLv3), Qt
+(LGPLv3) and whisper.cpp (MIT) as separate components; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 Open Media Encoder is an independent project. It is not affiliated with or endorsed by Adobe
 Inc.; Adobe and Media Encoder are trademarks of Adobe Inc. FFmpeg is a trademark of Fabrice Bellard.

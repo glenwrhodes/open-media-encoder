@@ -37,6 +37,7 @@ protected:
     void closeEvent(QCloseEvent *e) override;
 
 private:
+    void startQueue();
     void buildDocks();
     void applyDefaultDockSizes();
     void buildMenus();

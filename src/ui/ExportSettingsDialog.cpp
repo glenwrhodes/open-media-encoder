@@ -2,6 +2,7 @@
 
 #include "FrameGrabber.h"
 #include "FramePreview.h"
+#include "SpeechModelPrompt.h"
 #include "Theme.h"
 #include "TimelineSlider.h"
 #include "core/AppSettings.h"
@@ -9,6 +10,8 @@
 #include "core/EncoderCaps.h"
 #include "core/Formats.h"
 #include "core/PresetManager.h"
+#include "core/QualityProbe.h"
+#include "core/Whisper.h"
 
 #include <QCheckBox>
 #include <QColorDialog>
@@ -23,8 +26,10 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -131,11 +136,20 @@ ExportSettingsDialog::ExportSettingsDialog(Mode mode, const ExportSettings &sett
     connect(m_grabber, &FrameGrabber::frameReady, this, [this](const QImage &img) {
         m_preview->setBusy(false);
         m_preview->setImage(img);
+        if (m_viewTabs->currentIndex() == CompareView)
+            showCompareFrame(); // the encoded frame for the same moment
     });
     connect(m_grabber, &FrameGrabber::failed, this, [this](const QString &err) {
         m_preview->setBusy(false);
         m_preview->setImage({});
         m_preview->setMessage(QStringLiteral("Preview unavailable:\n%1").arg(err));
+    });
+    m_afterGrabber = new FrameGrabber(this);
+    connect(m_afterGrabber, &FrameGrabber::frameReady, this,
+            [this](const QImage &img) { m_preview->setCompareImage(img); });
+    connect(m_afterGrabber, &FrameGrabber::failed, this, [this](const QString &err) {
+        m_preview->setCompareImage({});
+        m_preview->setMessage(QStringLiteral("Couldn't read the test encode:\n%1").arg(err));
     });
 
     auto *split = new QSplitter(Qt::Horizontal);
@@ -178,10 +192,17 @@ QWidget *ExportSettingsDialog::buildPreviewSide()
     m_viewTabs = new QTabBar;
     m_viewTabs->addTab(QStringLiteral("Source"));
     m_viewTabs->addTab(QStringLiteral("Output"));
-    m_viewTabs->setCurrentIndex(1);
-    m_viewTabs->setTabToolTip(0, QStringLiteral("The full source clip. Set In and Out points here."));
-    m_viewTabs->setTabToolTip(1, QStringLiteral("What will be encoded: only the In-Out range, with effects applied."));
+    m_viewTabs->addTab(QStringLiteral("Compare"));
+    m_viewTabs->setCurrentIndex(OutputView);
+    m_viewTabs->setTabToolTip(SourceView, QStringLiteral("The full source clip. Set In and Out points here."));
+    m_viewTabs->setTabToolTip(OutputView,
+                              QStringLiteral("What will be encoded: only the In-Out range, with effects applied."));
+    m_viewTabs->setTabToolTip(CompareView, QStringLiteral("Encode a few seconds with these settings and compare them "
+                                                          "with the original, side by side."));
     connect(m_viewTabs, &QTabBar::currentChanged, this, [this] {
+        m_preview->setCompare(m_viewTabs->currentIndex() == CompareView);
+        if (m_viewTabs->currentIndex() == CompareView)
+            m_preview->setZoom(m_zoom->currentData().toDouble());
         syncTimeline();
         updateDerived();
     });
@@ -201,6 +222,35 @@ QWidget *ExportSettingsDialog::buildPreviewSide()
     timeRow->addWidget(m_timeLabel);
     timeRow->addWidget(m_timeline, 1);
     v->addLayout(timeRow);
+
+    // Compare view: test encode controls.
+    m_compareBar = new QWidget;
+    auto *cb = new QHBoxLayout(m_compareBar);
+    cb->setContentsMargins(0, 0, 0, 0);
+    m_testEncode = new QPushButton(QStringLiteral("Test Encode"));
+    m_testEncode->setObjectName("primary");
+    m_testEncode->setToolTip(QStringLiteral("Encode a few seconds from the playhead with these settings"));
+    connect(m_testEncode, &QPushButton::clicked, this, &ExportSettingsDialog::runTestEncode);
+    m_testLength = new QComboBox;
+    for (int s : {2, 5, 10, 20})
+        m_testLength->addItem(QStringLiteral("%1 seconds").arg(s), s);
+    m_testLength->setCurrentIndex(1);
+    m_zoom = new QComboBox;
+    m_zoom->addItem(QStringLiteral("Fit"), 0.0);
+    m_zoom->addItem(QStringLiteral("100%"), 1.0);
+    m_zoom->addItem(QStringLiteral("200%"), 2.0);
+    m_zoom->addItem(QStringLiteral("400%"), 4.0);
+    m_zoom->setToolTip(QStringLiteral("Zoom in to see compression detail; drag to look around"));
+    connect(m_zoom, &QComboBox::activated, this, [this] { m_preview->setZoom(m_zoom->currentData().toDouble()); });
+    m_testResult = new QLabel;
+    m_testResult->setObjectName("muted");
+    m_testResult->setWordWrap(true);
+    cb->addWidget(m_testEncode);
+    cb->addWidget(m_testLength);
+    cb->addWidget(new QLabel(QStringLiteral("Zoom:")));
+    cb->addWidget(m_zoom);
+    cb->addWidget(m_testResult, 1);
+    v->addWidget(m_compareBar);
 
     auto *rangeRow = new QHBoxLayout;
     m_setIn = new QPushButton(QStringLiteral("Set In"));
@@ -356,6 +406,7 @@ QWidget *ExportSettingsDialog::buildVideoTab()
 
     auto *basic = new QGroupBox(QStringLiteral("Basic Video Settings"));
     auto *bf = new QFormLayout(basic);
+    m_basicForm = bf;
     m_sizePreset = new QComboBox;
     m_sizePreset->addItem(QStringLiteral("Custom"), QSize(-1, -1));
     for (const auto &fs : kFrameSizes)
@@ -392,8 +443,25 @@ QWidget *ExportSettingsDialog::buildVideoTab()
     m_scaleMode->addItem(QStringLiteral("Scale to Fit (letterbox)"), "fit");
     m_scaleMode->addItem(QStringLiteral("Scale to Fill (crop)"), "fill");
     m_scaleMode->addItem(QStringLiteral("Stretch to Fill"), "stretch");
+    m_scaleMode->addItem(QStringLiteral("Scale to Fit, Blurred Background"), "blur");
+    m_scaleMode->setItemData(
+        3,
+        QStringLiteral("Fits the whole picture and fills the rest of the frame with a blurred copy, "
+                       "e.g. a landscape clip as a vertical 9:16 Short"),
+        Qt::ToolTipRole);
     connect(m_scaleMode, &QComboBox::activated, this, &ExportSettingsDialog::onFieldChanged);
     bf->addRow(QStringLiteral("Source Scaling:"), m_scaleMode);
+    m_blurStrength = new QSpinBox;
+    m_blurStrength->setRange(1, 100);
+    m_blurStrength->setToolTip(QStringLiteral("How strongly the background copy is blurred"));
+    connect(m_blurStrength, &QSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+    bf->addRow(QStringLiteral("Background Blur:"), m_blurStrength);
+    m_bgDim = new QSpinBox;
+    m_bgDim->setRange(0, 90);
+    m_bgDim->setSuffix(QStringLiteral(" %"));
+    m_bgDim->setToolTip(QStringLiteral("Darkens the background so the picture stands out"));
+    connect(m_bgDim, &QSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+    bf->addRow(QStringLiteral("Background Darken:"), m_bgDim);
 
     m_fps = new QComboBox;
     m_fps->setEditable(true);
@@ -441,6 +509,7 @@ QWidget *ExportSettingsDialog::buildVideoTab()
 
     auto *br = new QGroupBox(QStringLiteral("Bitrate Settings"));
     auto *rf = new QFormLayout(br);
+    m_rateForm = rf;
     m_rc = new QComboBox;
     connect(m_rc, &QComboBox::activated, this, &ExportSettingsDialog::onFieldChanged);
     rf->addRow(QStringLiteral("Bitrate Encoding:"), m_rc);
@@ -464,7 +533,48 @@ QWidget *ExportSettingsDialog::buildVideoTab()
     connect(m_quality, &QSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
     qrow->addWidget(m_qualitySlider, 1);
     qrow->addWidget(m_quality);
-    rf->addRow(QStringLiteral("Quality (lower = better):"), qrow);
+    m_qualityRow = new QWidget;
+    qrow->setContentsMargins(0, 0, 0, 0);
+    m_qualityRow->setLayout(qrow);
+    rf->addRow(QStringLiteral("Quality (lower = better):"), m_qualityRow);
+
+    // Target file size, with sizes common services accept.
+    m_sizeRow = new QWidget;
+    auto *sr = new QHBoxLayout(m_sizeRow);
+    sr->setContentsMargins(0, 0, 0, 0);
+    m_targetSize = new QDoubleSpinBox;
+    m_targetSize->setRange(0.1, 100000);
+    m_targetSize->setDecimals(1);
+    m_targetSize->setSuffix(QStringLiteral(" MB"));
+    connect(m_targetSize, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+    auto *sizes = new QToolButton;
+    sizes->setText(QStringLiteral("Common Sizes"));
+    sizes->setPopupMode(QToolButton::InstantPopup);
+    auto *sizeMenu = new QMenu(sizes);
+    const QList<QPair<QString, double>> common = {{"Discord (10 MB)", 10},
+                                                  {"WhatsApp (16 MB)", 16},
+                                                  {"Email attachment (25 MB)", 25},
+                                                  {"Discord Nitro Basic (50 MB)", 50},
+                                                  {"Discord Nitro (500 MB)", 500}};
+    for (const auto &c : common)
+        sizeMenu->addAction(c.first, this, [this, mb = c.second] { m_targetSize->setValue(mb); });
+    sizes->setMenu(sizeMenu);
+    sr->addWidget(m_targetSize, 1);
+    sr->addWidget(sizes);
+    rf->addRow(QStringLiteral("Target File Size:"), m_sizeRow);
+
+    m_vmafRow = new QWidget;
+    auto *vr = new QHBoxLayout(m_vmafRow);
+    vr->setContentsMargins(0, 0, 0, 0);
+    m_targetVmaf = new QDoubleSpinBox;
+    m_targetVmaf->setRange(70, 99.5);
+    m_targetVmaf->setDecimals(1);
+    m_targetVmaf->setSingleStep(0.5);
+    connect(m_targetVmaf, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+    vr->addWidget(m_targetVmaf, 1);
+    rf->addRow(QStringLiteral("Target VMAF Score:"), m_vmafRow);
+    m_rateNote = muted(QString());
+    rf->addRow(QString(), m_rateNote);
     v->addWidget(br);
 
     auto *adv = new QGroupBox(QStringLiteral("Advanced Settings"));
@@ -710,6 +820,72 @@ QWidget *ExportSettingsDialog::buildEffectsTab()
         m_capSize = spin(8, 200, QStringLiteral(" pt"));
         f->addRow(QStringLiteral("Font Size:"), m_capSize);
     }
+
+    // Automatic captions
+    m_autoCapGroup = checkGroup(QStringLiteral("Automatic Captions (Speech to Text)"));
+    {
+        auto *f = new QFormLayout(m_autoCapGroup);
+        f->addRow(muted(QStringLiteral("Writes captions from the speech in the audio, on this computer (whisper.cpp). "
+                                       "Transcription runs before the encode.")));
+        m_capLanguage = new QComboBox;
+        for (const auto &l : Whisper::languages())
+            m_capLanguage->addItem(l.second, l.first);
+        connect(m_capLanguage, &QComboBox::activated, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QStringLiteral("Spoken Language:"), m_capLanguage);
+        m_capTranslate = new QCheckBox(QStringLiteral("Translate the captions to English"));
+        connect(m_capTranslate, &QCheckBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QString(), m_capTranslate);
+        m_capSrt = new QCheckBox(QStringLiteral("Save an .srt file next to the output"));
+        m_capEmbed = new QCheckBox(QStringLiteral("Add a subtitle track viewers can turn on"));
+        m_capBurn = new QCheckBox(QStringLiteral("Burn the captions into the picture"));
+        for (QCheckBox *c : {m_capSrt, m_capEmbed, m_capBurn}) {
+            connect(c, &QCheckBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
+            f->addRow(QString(), c);
+        }
+        m_autoCapSize = spin(16, 200, QStringLiteral(" px"));
+        m_autoCapSize->setToolTip(QStringLiteral("Text height on a 1080-line frame; scaled for other sizes"));
+        f->addRow(QStringLiteral("Burned Text Size:"), m_autoCapSize);
+        m_capModel = muted(QString());
+        m_capModel->setTextFormat(Qt::RichText);
+        connect(m_capModel, &QLabel::linkActivated, this, [this] {
+            SpeechModelPrompt::download(this, Whisper::selectedModelId());
+            updateDerived();
+        });
+        f->addRow(QString(), m_capModel);
+    }
+
+    // Remove silence
+    m_silenceGroup = checkGroup(QStringLiteral("Remove Silence"));
+    {
+        auto *f = new QFormLayout(m_silenceGroup);
+        f->addRow(muted(QStringLiteral("Cuts pauses out of the video and audio, e.g. for talks, tutorials and "
+                                       "podcasts. The pauses are found when encoding starts.")));
+        m_silenceThreshold = new QDoubleSpinBox;
+        m_silenceThreshold->setRange(-80, -10);
+        m_silenceThreshold->setDecimals(0);
+        m_silenceThreshold->setSuffix(QStringLiteral(" dB"));
+        m_silenceThreshold->setToolTip(QStringLiteral("Audio quieter than this counts as silence. Raise it (e.g. "
+                                                      "-30 dB) when there is background noise."));
+        connect(m_silenceThreshold, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QStringLiteral("Silence Below:"), m_silenceThreshold);
+        m_silenceMin = new QDoubleSpinBox;
+        m_silenceMin->setRange(0.2, 30);
+        m_silenceMin->setDecimals(1);
+        m_silenceMin->setSingleStep(0.1);
+        m_silenceMin->setSuffix(QStringLiteral(" s"));
+        m_silenceMin->setToolTip(QStringLiteral("Only pauses at least this long are cut"));
+        connect(m_silenceMin, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QStringLiteral("Shortest Pause:"), m_silenceMin);
+        m_silencePad = new QDoubleSpinBox;
+        m_silencePad->setRange(0, 2);
+        m_silencePad->setDecimals(2);
+        m_silencePad->setSingleStep(0.05);
+        m_silencePad->setSuffix(QStringLiteral(" s"));
+        m_silencePad->setToolTip(QStringLiteral("How much of each pause is kept before and after speech, so words "
+                                                "aren't clipped"));
+        connect(m_silencePad, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QStringLiteral("Keep Around Speech:"), m_silencePad);
+    }
     v->addStretch();
 
     auto *scroll = new QScrollArea;
@@ -802,7 +978,8 @@ double ExportSettingsDialog::rangeOut() const
 // which is exactly what gets encoded.
 void ExportSettingsDialog::syncTimeline()
 {
-    const bool output = m_viewTabs->currentIndex() == 1;
+    const bool output = m_viewTabs->currentIndex() != SourceView;
+    m_compareBar->setVisible(m_viewTabs->currentIndex() == CompareView);
     // In/Out and crop edit the source, so they're only offered on the Source tab.
     for (QWidget *w : std::initializer_list<QWidget *>{m_setIn, m_setOut, m_clearRange, m_cropGroup})
         w->setVisible(!output);
@@ -824,7 +1001,7 @@ void ExportSettingsDialog::updateTimeLabel()
 {
     const double fps = m_info.fps;
     const double t = currentTime();
-    if (m_viewTabs->currentIndex() == 1)
+    if (m_viewTabs->currentIndex() != SourceView)
         m_timeLabel->setText(QStringLiteral("%1 / %2").arg(formatDuration(t - rangeIn(), fps),
                                                            formatDuration(rangeOut() - rangeIn(), fps)));
     else
@@ -859,7 +1036,7 @@ void ExportSettingsDialog::setOutPoint()
 void ExportSettingsDialog::updateRangeLabel()
 {
     const double fps = m_info.fps;
-    const bool output = m_viewTabs && m_viewTabs->currentIndex() == 1;
+    const bool output = m_viewTabs && m_viewTabs->currentIndex() != SourceView;
     if (m_in < 0 && m_out < 0) {
         m_rangeLabel->setText(output ? QStringLiteral("the entire clip (%1). Set In/Out on the Source tab to trim.")
                                            .arg(formatDuration(sourceDuration(), fps))
@@ -910,6 +1087,10 @@ void ExportSettingsDialog::loadToUi()
         m_sizePreset->setCurrentIndex(i >= 0 ? i : 0);
     }
     selectData(m_scaleMode, s.video.scaleMode);
+    m_blurStrength->setValue(s.video.blurStrength);
+    m_bgDim->setValue(s.video.backgroundDim);
+    m_targetSize->setValue(s.video.targetSizeMB);
+    m_targetVmaf->setValue(s.video.targetVmaf);
     if (s.video.frameRate <= 0)
         m_fps->setCurrentIndex(0);
     else {
@@ -987,6 +1168,17 @@ void ExportSettingsDialog::loadToUi()
     m_capGroup->setChecked(e.captionsEnabled);
     m_capPath->setText(e.captionFile);
     m_capSize->setValue(e.captionSize);
+    m_autoCapGroup->setChecked(e.autoCaptions);
+    selectData(m_capLanguage, e.captionLanguage);
+    m_capTranslate->setChecked(e.captionTranslate);
+    m_capSrt->setChecked(e.captionSaveSrt);
+    m_capEmbed->setChecked(e.captionEmbed);
+    m_capBurn->setChecked(e.captionBurn);
+    m_autoCapSize->setValue(e.autoCaptionSize);
+    m_silenceGroup->setChecked(e.removeSilence);
+    m_silenceThreshold->setValue(e.silenceThreshold);
+    m_silenceMin->setValue(e.silenceMinDuration);
+    m_silencePad->setValue(e.silencePadding);
 
     m_vExtra->setText(s.video.extraArgs);
     m_aExtra->setText(s.audio.extraArgs);
@@ -1088,6 +1280,10 @@ void ExportSettingsDialog::readFromUi()
     s.video.width = m_width->value();
     s.video.height = m_height->value();
     s.video.scaleMode = m_scaleMode->currentData().toString();
+    s.video.blurStrength = m_blurStrength->value();
+    s.video.backgroundDim = m_bgDim->value();
+    s.video.targetSizeMB = m_targetSize->value();
+    s.video.targetVmaf = m_targetVmaf->value();
     const QString fpsTxt = m_fps->currentText().trimmed();
     s.video.frameRate = (fpsTxt.isEmpty() || fpsTxt.startsWith("Match")) ? 0.0 : qMax(0.0, fpsTxt.toDouble());
     s.video.frameRateMode = m_fpsMode->currentData().toString();
@@ -1154,6 +1350,17 @@ void ExportSettingsDialog::readFromUi()
     e.captionsEnabled = m_capGroup->isChecked();
     e.captionFile = m_capPath->text().trimmed();
     e.captionSize = m_capSize->value();
+    e.autoCaptions = m_autoCapGroup->isChecked();
+    e.captionLanguage = m_capLanguage->currentData().toString();
+    e.captionTranslate = m_capTranslate->isChecked();
+    e.captionSaveSrt = m_capSrt->isChecked();
+    e.captionEmbed = m_capEmbed->isChecked();
+    e.captionBurn = m_capBurn->isChecked();
+    e.autoCaptionSize = m_autoCapSize->value();
+    e.removeSilence = m_silenceGroup->isChecked();
+    e.silenceThreshold = m_silenceThreshold->value();
+    e.silenceMinDuration = m_silenceMin->value();
+    e.silencePadding = m_silencePad->value();
 }
 
 void ExportSettingsDialog::refreshPresetCombo()
@@ -1344,11 +1551,59 @@ void ExportSettingsDialog::updateDerived()
 
     const QString rc = m_settings.video.rateControl;
     const bool bitrateMode = rc == "cbr" || rc == "vbr1" || rc == "vbr2";
-    m_target->setEnabled(bitrateMode);
-    m_max->setEnabled(rc == "vbr1" || rc == "vbr2");
-    m_quality->setEnabled(rc == "quality");
-    m_qualitySlider->setEnabled(rc == "quality");
+    const bool hasRc = vc && !vc->rateControls.contains("none");
+    m_rateForm->setRowVisible(m_target, hasRc && bitrateMode);
+    m_rateForm->setRowVisible(m_max, hasRc && (rc == "vbr1" || rc == "vbr2" || rc == "size"));
+    m_rateForm->setRowVisible(m_qualityRow, hasRc && rc == "quality");
+    m_rateForm->setRowVisible(m_sizeRow, rc == "size");
+    m_rateForm->setRowVisible(m_vmafRow, rc == "vmaf");
+    m_targetVmaf->setEnabled(QualityProbe::vmafAvailable());
+    if (rc == "size") {
+        m_rateNote->setText(QStringLiteral("The bitrate is worked out from the length, in two passes where the "
+                                           "encoder supports them. If the file still comes out over the size, it's "
+                                           "encoded again a little lower. Maximum Bitrate caps it for short clips."));
+    } else if (rc == "vmaf") {
+        m_rateNote->setText(
+            QualityProbe::vmafAvailable()
+                ? QStringLiteral("Finds the smallest file that still scores this on VMAF, Netflix's measure of how "
+                                 "close video looks to the original: 93 is good, 95 looks the same to most viewers, "
+                                 "97 and up is near lossless. A few short test encodes run before the encode.")
+                : QStringLiteral("This FFmpeg build has no VMAF, so the codec's default quality is used."));
+    }
+    m_rateForm->setRowVisible(m_rateNote, rc == "size" || rc == "vmaf");
     m_rc->setEnabled(vc && vc->rateControls.size() > 1);
+    const bool sized = m_settings.video.width > 0 && m_settings.video.height > 0;
+    m_basicForm->setRowVisible(m_blurStrength, sized && m_settings.video.scaleMode == "blur");
+    m_basicForm->setRowVisible(m_bgDim, sized && m_settings.video.scaleMode == "blur");
+
+    // Automatic captions: what the output can carry, and whether the speech model is ready.
+    const EffectsSettings &fx = m_settings.effects;
+    const bool canEmbed = !CommandBuilder::subtitleCodecFor(m_settings).isEmpty();
+    m_capEmbed->setEnabled(canEmbed);
+    m_capEmbed->setToolTip(
+        canEmbed ? QString() : QStringLiteral("This format can't carry subtitle tracks (MP4, MOV and WebM can)"));
+    m_capBurn->setEnabled(videoOn);
+    m_autoCapSize->setEnabled(fx.captionBurn && videoOn);
+    if (const Whisper::Model *model = Whisper::model(Whisper::selectedModelId())) {
+        if (AppSettings::whisperCliPath().isEmpty())
+            m_capModel->setText(QStringLiteral("whisper-cli wasn't found next to the app, so captions can't be made."));
+        else if (!Whisper::activeModelPath().isEmpty())
+            m_capModel->setText(QStringLiteral("Speech model: %1, ready. Change it in Preferences > Captions.")
+                                    .arg(model->label.toHtmlEscaped()));
+        else
+            m_capModel->setText(QStringLiteral("Speech model: %1, not downloaded yet. <a href=\"get\">Download "
+                                               "now</a> or when you click OK.")
+                                    .arg(model->label.toHtmlEscaped()));
+    }
+
+    // Compare needs a video source and a video output that isn't a still image.
+    const bool comparable =
+        m_mode == Mode::Output && videoOn && f && !f->imageFormat && m_info.valid && m_info.hasVideo && !m_info.isStill;
+    m_viewTabs->setTabEnabled(CompareView, comparable);
+    if (!comparable && m_viewTabs->currentIndex() == CompareView)
+        m_viewTabs->setCurrentIndex(OutputView);
+    if (m_test && m_testFor != testSignature())
+        clearTestEncode(QStringLiteral("The settings changed: run the test encode again."));
     m_imageSeq->setEnabled(f && f->imageFormat);
     m_stillDuration->setEnabled(!f || !f->imageFormat);
     m_fpsMode->setEnabled(m_settings.video.frameRate > 0 || m_settings.video.frameRateLimit > 0);
@@ -1373,23 +1628,18 @@ void ExportSettingsDialog::updateDerived()
     if (m_info.isStill)
         duration = m_settings.video.stillDuration;
     const qint64 est = m_settings.estimateSize(duration, src);
+    // A size target is in decimal megabytes (under the limit however a service counts them), so it's shown as set.
+    const QString size = videoOn && m_settings.video.rateControl == "size"
+                             ? QStringLiteral("under %1 MB").arg(m_settings.video.targetSizeMB, 0, 'g', 6)
+                         : est >= 0 ? formatBytes(est)
+                                    : QStringLiteral("varies with content");
     m_estimate->setText(src ? QStringLiteral("Estimated File Size: %1    ·    Duration: %2")
-                                  .arg(est >= 0 ? formatBytes(est) : QStringLiteral("varies with content"),
-                                       formatDuration(duration, m_info.fps))
+                                  .arg(size, formatDuration(duration, m_info.fps))
                             : QString());
 
     // Command preview
     if (src) {
-        BuildRequest req;
-        req.inputs = m_files.isEmpty() ? QStringList{m_info.path} : m_files;
-        req.source = m_info;
-        req.inputArgs = m_inputArgs;
-        req.inputArgs = m_inputArgs;
-        req.totalDuration = m_totalDuration;
-        req.settings = m_settings;
-        req.outputPath = outputPath();
-        req.inPoint = m_in;
-        req.outPoint = m_out;
+        BuildRequest req = fullRequest();
         req.pass = CommandBuilder::usesTwoPass(m_settings) ? 2 : 0;
         req.passLogFile = QStringLiteral("passlog");
         req.workDir = AppSettings::tempDir();
@@ -1400,9 +1650,20 @@ void ExportSettingsDialog::updateDerived()
             QStringList quoted;
             for (const QString &a : r.args)
                 quoted << (a.contains(' ') || a.contains(';') ? QStringLiteral("\"%1\"").arg(a) : a);
-            m_cmdPreview->setPlainText(
-                QStringLiteral("ffmpeg ") + quoted.join(' ') +
-                (req.pass ? QStringLiteral("\n\n(two-pass: a first analysis pass runs before this)") : QString()));
+            QStringList notes;
+            if (req.pass)
+                notes << QStringLiteral("Two-pass: a first analysis pass runs before this.");
+            if (fx.removeSilence)
+                notes << QStringLiteral("Remove silence: the pauses are found first and cut from video and audio.");
+            if (m_settings.video.rateControl == "vmaf")
+                notes << QStringLiteral("Target quality: test encodes find the quality value first; this shows the "
+                                        "starting value.");
+            if (m_settings.video.rateControl == "size")
+                notes << QStringLiteral("Target file size: if the file comes out too big, it's encoded again lower.");
+            if (fx.autoCaptions)
+                notes << QStringLiteral("Captions: the speech is transcribed with whisper.cpp first.");
+            m_cmdPreview->setPlainText(QStringLiteral("ffmpeg ") + quoted.join(' ') +
+                                       (notes.isEmpty() ? QString() : QStringLiteral("\n\n") + notes.join('\n')));
         } else {
             m_cmdPreview->setPlainText(QStringLiteral("Cannot encode with these settings:\n") + r.error);
         }
@@ -1410,7 +1671,7 @@ void ExportSettingsDialog::updateDerived()
         m_cmdPreview->setPlainText(QStringLiteral("Command preview is available when editing a queued output."));
     }
 
-    const bool sourceView = m_viewTabs->currentIndex() == 0;
+    const bool sourceView = m_viewTabs->currentIndex() == SourceView;
     m_preview->setCropOverlay(sourceView && m_settings.effects.cropEnabled, m_settings.effects.cropLeft,
                               m_settings.effects.cropTop, m_settings.effects.cropRight, m_settings.effects.cropBottom);
     schedulePreview();
@@ -1432,11 +1693,135 @@ void ExportSettingsDialog::renderPreview()
     req.settings = m_settings;
     req.inPoint = currentTime();
     req.workDir = AppSettings::tempDir();
-    const bool effects = m_viewTabs->currentIndex() == 1;
+    const bool effects = m_viewTabs->currentIndex() != SourceView;
     if (!effects)
         req.settings.effects = EffectsSettings();
     m_preview->setBusy(true);
     m_grabber->request(req, currentTime(), effects);
+}
+
+// ------------------------------------------------------------------ before/after comparison
+
+BuildRequest ExportSettingsDialog::fullRequest() const
+{
+    BuildRequest req;
+    req.inputs = m_files.isEmpty() ? QStringList{m_info.path} : m_files;
+    req.source = m_info;
+    req.inputArgs = m_inputArgs;
+    req.totalDuration = m_totalDuration;
+    req.settings = m_settings;
+    req.outputPath = outputPath();
+    req.inPoint = m_in;
+    req.outPoint = m_out;
+    req.passLogFile = QStringLiteral("passlog");
+    req.workDir = AppSettings::tempDir();
+    return req;
+}
+
+QString ExportSettingsDialog::testSignature() const
+{
+    return QString::fromUtf8(QJsonDocument(m_settings.toJson()).toJson(QJsonDocument::Compact)) +
+           QStringLiteral("|%1|%2").arg(m_in).arg(m_out);
+}
+
+void ExportSettingsDialog::clearTestEncode(const QString &message)
+{
+    if (m_test) {
+        // May be called from the test's own signal, so it's deleted later.
+        m_test->disconnect(this);
+        m_test->stop();
+        m_test->deleteLater();
+        m_test = nullptr;
+    }
+    m_testFor.clear();
+    m_preview->setCompareImage({});
+    m_preview->setBusy(false);
+    m_testEncode->setText(QStringLiteral("Test Encode"));
+    m_testResult->setText(message);
+    if (m_viewTabs->currentIndex() == CompareView)
+        showCompareFrame();
+}
+
+void ExportSettingsDialog::runTestEncode()
+{
+    if (m_test && m_test->result().bytes == 0) { // running: the button stops it
+        clearTestEncode(QStringLiteral("Test encode stopped."));
+        return;
+    }
+    clearTestEncode();
+    const double len = m_testLength->currentData().toDouble();
+    const double from = rangeIn();
+    const double to = rangeOut();
+    const double start = qBound(from, currentTime(), qMax(from, to - len));
+    const double length = qMin(len, to - start);
+    if (length <= 0.05)
+        return;
+    m_test = new TestEncode(fullRequest(), start, length, AppSettings::ffmpegPath(), this);
+    m_testFor = testSignature();
+    m_testEncode->setText(QStringLiteral("Stop"));
+    m_preview->setCompareImage({});
+    m_preview->setBusy(true, QStringLiteral("Test encode…"));
+    m_testResult->setText(QStringLiteral("Encoding %1 to %2…")
+                              .arg(formatDuration(start, m_info.fps), formatDuration(start + length, m_info.fps)));
+    TestEncode *test = m_test;
+    connect(test, &TestEncode::status, this, [this](const QString &text) { m_preview->setBusy(true, text); });
+    connect(test, &TestEncode::finished, this, [this, test](bool ok, const QString &error) {
+        if (test != m_test)
+            return;
+        m_preview->setBusy(false);
+        m_testEncode->setText(QStringLiteral("Test Encode"));
+        if (!ok) {
+            const QString msg = error;
+            clearTestEncode(QStringLiteral("Test encode failed: %1").arg(msg));
+            return;
+        }
+        const TestEncodeResult &r = test->result();
+        m_testInfo = MediaInfo::probe(AppSettings::ffprobePath(), r.file);
+        QStringList parts;
+        parts << QStringLiteral("%1 Mbps").arg(r.mbps, 0, 'f', r.mbps < 10 ? 2 : 1);
+        if (r.vmaf >= 0)
+            parts << QStringLiteral("VMAF %1").arg(r.vmaf, 0, 'f', 1);
+        if (r.speed > 0)
+            parts << QStringLiteral("encoded at %1x").arg(r.speed, 0, 'f', 1);
+        if (r.projected > 0)
+            parts << QStringLiteral("whole output about %1").arg(formatBytes(r.projected));
+        if (m_settings.video.rateControl == "vmaf")
+            parts << QStringLiteral("(starting quality; the encode searches for the target)");
+        m_testResult->setText(parts.join(QStringLiteral("  ·  ")));
+        m_testResult->setToolTip(QStringLiteral("VMAF 93 is good, 95 looks the same to most viewers, 97+ is near "
+                                                "lossless. Drag the divider to compare."));
+        // Show the start of the test, where it's most useful.
+        if (currentTime() < r.start || currentTime() >= r.start + r.length)
+            m_timeline->setPosition(r.start + qMin(1.0, r.length / 2));
+        renderPreview();
+    });
+    m_test->start();
+}
+
+void ExportSettingsDialog::showCompareFrame()
+{
+    if (!m_test || m_test->result().bytes == 0 || !m_testInfo.valid) {
+        m_preview->setCompareImage({});
+        if (!m_test)
+            m_preview->setMessage(QStringLiteral("Click Test Encode to encode a few seconds from here with these "
+                                                 "settings, then drag the divider to compare."));
+        return;
+    }
+    const TestEncodeResult &r = m_test->result();
+    const double t = currentTime();
+    if (t < r.start - 0.001 || t >= r.start + r.length) {
+        m_preview->setCompareImage({});
+        m_preview->setMessage(
+            QStringLiteral("The test encode covers %1 to %2. Move the playhead there, or run "
+                           "a new test here.")
+                .arg(formatDuration(r.start, m_info.fps), formatDuration(r.start + r.length, m_info.fps)));
+        return;
+    }
+    BuildRequest req;
+    req.inputs = {r.file};
+    req.source = m_testInfo;
+    req.workDir = AppSettings::tempDir();
+    m_afterGrabber->request(req, t - r.start, false);
 }
 
 void ExportSettingsDialog::accept()
@@ -1446,6 +1831,9 @@ void ExportSettingsDialog::accept()
         QMessageBox::warning(this, windowTitle(), QStringLiteral("Please choose an output file."));
         return;
     }
+    // Offer the speech model now rather than failing at encode time (declining keeps the settings).
+    if (m_settings.effects.autoCaptions)
+        SpeechModelPrompt::ensureInstalled(this);
     if (m_presetId.isEmpty())
         m_settings.presetName = QStringLiteral("Custom");
     QDialog::accept();

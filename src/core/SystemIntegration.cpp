@@ -11,6 +11,8 @@
 #include <windows.h>
 
 #include <powrprof.h>
+#else
+#include <signal.h>
 #endif
 
 namespace SystemIntegration {
@@ -112,5 +114,28 @@ void revealInFileManager(const QString &path)
     const QString dir = fi.isDir() ? fi.absoluteFilePath() : fi.absolutePath();
     QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
+
+#ifdef Q_OS_WIN
+bool suspendProcess(qint64 pid, bool suspend)
+{
+    using NtProcFn = LONG(NTAPI *)(HANDLE);
+    static NtProcFn ntSuspend = reinterpret_cast<NtProcFn>(
+        reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSuspendProcess")));
+    static NtProcFn ntResume = reinterpret_cast<NtProcFn>(
+        reinterpret_cast<void *>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtResumeProcess")));
+    HANDLE h = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, DWORD(pid));
+    if (!h)
+        return false;
+    LONG status = -1;
+    if (suspend && ntSuspend)
+        status = ntSuspend(h);
+    else if (!suspend && ntResume)
+        status = ntResume(h);
+    CloseHandle(h);
+    return status == 0;
+}
+#else
+bool suspendProcess(qint64 pid, bool suspend) { return ::kill(pid_t(pid), suspend ? SIGSTOP : SIGCONT) == 0; }
+#endif
 
 } // namespace SystemIntegration

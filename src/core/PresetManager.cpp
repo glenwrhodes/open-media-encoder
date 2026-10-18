@@ -114,6 +114,19 @@ void PresetManager::buildSystemPresets()
         frame(s, 1280, 720);
         bitrate(s, 10, 12);
         add(s);
+        s = base("h264", "Visually Transparent (VMAF 95)");
+        s.comment = QStringLiteral("The smallest file that still looks like the source: test encodes find the "
+                                   "quality setting that scores 95 on VMAF.");
+        s.video.rateControl = "vmaf";
+        s.video.targetVmaf = 95;
+        add(s);
+        if (!hw.isEmpty()) {
+            s = withCodec(base("h264", "Visually Transparent (VMAF 95) - Hardware Encoding"), hw);
+            s.comment = QStringLiteral("As Visually Transparent, on the GPU: faster, somewhat larger files.");
+            s.video.rateControl = "vmaf";
+            s.video.targetVmaf = 95;
+            add(s);
+        }
         s = base("h264", "Low Resolution Proxy 1280x720");
         frame(s, 1280, 720);
         s.video.rateControl = "quality";
@@ -183,6 +196,19 @@ void PresetManager::buildSystemPresets()
              "Any vertical platform. Landscape sources are cropped to fill."},
             {"Social (Generic)", "Portrait 4x5 1080x1350", 1080, 1350, "fill", 10, 12, 256, "Any 4:5 feed."},
             {"Social (Generic)", "Square 1x1 1080x1080", 1080, 1080, "fill", 10, 12, 256, "Any square feed."},
+            // The whole picture on a blurred copy of itself instead of cropping it.
+            {"YouTube", "YouTube Shorts 1080x1920 Blurred Background", 1080, 1920, "blur", 12, 16, 384,
+             "Vertical 9:16 Short. Landscape sources are shown whole over a blurred copy of themselves."},
+            {"TikTok", "TikTok 1080x1920 Blurred Background", 1080, 1920, "blur", 12, 16, 256,
+             "Vertical 9:16. Landscape sources are shown whole over a blurred copy of themselves."},
+            {"Instagram", "Instagram Reels 1080x1920 Blurred Background", 1080, 1920, "blur", 12, 16, 256,
+             "Vertical 9:16 Reel. Landscape sources are shown whole over a blurred copy of themselves."},
+            {"Social (Generic)", "Vertical 9x16 Blurred Background 1080x1920", 1080, 1920, "blur", 12, 16, 256,
+             "Any vertical platform. Landscape sources are shown whole over a blurred copy of themselves."},
+            {"Social (Generic)", "Square 1x1 Blurred Background 1080x1080", 1080, 1080, "blur", 10, 12, 256,
+             "Any square feed, without cropping the picture."},
+            {"Social (Generic)", "Landscape 16x9 Blurred Background 1920x1080", 1920, 1080, "blur", 12, 16, 256,
+             "Vertical phone video in a 16:9 frame (e.g. for YouTube), with a blurred fill instead of black bars."},
         };
         for (const Web &w : web) {
             auto s = base("h264", QString::fromUtf8(w.name));
@@ -196,6 +222,51 @@ void PresetManager::buildSystemPresets()
             s.audio.bitrate = w.audioKbps;
             s.audio.sampleRate = 48000;
             s.audio.channels = 2;
+            add(s);
+        }
+        // Under a size limit: the bitrate is worked out from the length (two passes).
+        struct Sized {
+            const char *name;
+            double mb;
+            const char *comment;
+        };
+        static const Sized sized[] = {
+            {"Discord - under 10 MB", 10, "Fits Discord's 10 MB upload limit (free accounts)."},
+            {"WhatsApp - under 16 MB", 16, "Fits WhatsApp's 16 MB video limit."},
+            {"Email - under 25 MB", 25, "Fits the 25 MB attachment limit of Gmail, Outlook and most mail services."},
+            {"Discord Nitro Basic - under 50 MB", 50, "Fits Discord's 50 MB limit with Nitro Basic."},
+        };
+        for (const Sized &z : sized) {
+            auto s = base("h264", QString::fromUtf8(z.name));
+            s.group = QStringLiteral("Fit to File Size");
+            s.comment = QString::fromUtf8(z.comment) +
+                        QStringLiteral(" Long videos get a lower bitrate; trim them or lower the frame size if "
+                                       "they look soft.");
+            s.video.rateControl = "size";
+            s.video.targetSizeMB = z.mb;
+            s.video.maxBitrate = 16; // short clips don't need more than this
+            s.video.profile = "high";
+            s.video.frameRateLimit = 60;
+            s.audio.bitrate = 128;
+            s.audio.sampleRate = 48000;
+            s.audio.channels = 2;
+            add(s);
+        }
+        // Spoken-word video: pauses cut, loudness evened out.
+        {
+            auto s = base("h264", "Talk & Tutorial - Silence Removed 1080p");
+            s.group = QStringLiteral("Social (Generic)");
+            s.comment = QStringLiteral("Cuts the pauses out of talking-head videos, lessons and screen recordings, "
+                                       "and evens out the volume (-14 LUFS).");
+            frame(s, 1920, 1080);
+            bitrate(s, 10, 12);
+            s.video.profile = "high";
+            s.video.frameRateLimit = 60;
+            s.video.scaleBitrateWithFps = true;
+            s.audio.bitrate = 192;
+            s.effects.removeSilence = true;
+            s.effects.loudnessEnabled = true;
+            s.effects.loudnessTarget = -14;
             add(s);
         }
         // A smaller-file 4K option for YouTube, on the GPU when available.
@@ -238,6 +309,12 @@ void PresetManager::buildSystemPresets()
             bitrate(s, 12, 15);
             add(s);
         }
+        s = base("hevc", "Visually Transparent (VMAF 95)");
+        s.comment = QStringLiteral("The smallest HEVC file that still looks like the source: test encodes find the "
+                                   "quality setting that scores 95 on VMAF.");
+        s.video.rateControl = "vmaf";
+        s.video.targetVmaf = 95;
+        add(s);
         s = base("hevc", "8K UHD");
         frame(s, 7680, 4320);
         bitrate(s, 60, 72);
@@ -403,6 +480,17 @@ void PresetManager::buildSystemPresets()
         for (int kbps : {320, 192, 128}) {
             auto s = base("aac", QStringLiteral("AAC %1kbps 48kHz").arg(kbps));
             s.audio.bitrate = kbps;
+            add(s);
+        }
+        {
+            auto s = base("mp3", "Podcast - Silence Removed (-16 LUFS)");
+            s.comment = QStringLiteral("Cuts long pauses and normalizes to -16 LUFS, the usual podcast loudness.");
+            s.audio.bitrate = 128;
+            s.audio.sampleRate = 44100;
+            s.effects.removeSilence = true;
+            s.effects.loudnessEnabled = true;
+            s.effects.loudnessTarget = -16;
+            s.effects.truePeak = -1.5;
             add(s);
         }
         auto s = base("wav", "Waveform Audio 48kHz 16-bit");

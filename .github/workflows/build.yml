@@ -77,6 +77,26 @@ jobs:
         shell: pwsh
         run: ./scripts/fetch-ffmpeg.ps1
 
+      - name: Cache whisper.cpp
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper
+          key: whisper-windows-${{ hashFiles('scripts/fetch-whisper.ps1') }}
+
+      - name: Fetch whisper.cpp
+        shell: pwsh
+        run: ./scripts/fetch-whisper.ps1
+
+      - name: Cache test data
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper-models
+          key: test-data-${{ hashFiles('scripts/fetch-test-data.sh') }}
+
+      - name: Fetch test data
+        shell: bash
+        run: ./scripts/fetch-test-data.sh
+
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -142,6 +162,24 @@ jobs:
       - name: Fetch FFmpeg
         run: ./scripts/fetch-ffmpeg.sh
 
+      - name: Cache whisper.cpp
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper-linux
+          key: whisper-linux-x86_64-${{ hashFiles('scripts/fetch-whisper.sh') }}
+
+      - name: Build whisper.cpp
+        run: ./scripts/fetch-whisper.sh
+
+      - name: Cache test data
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper-models
+          key: test-data-${{ hashFiles('scripts/fetch-test-data.sh') }}
+
+      - name: Fetch test data
+        run: ./scripts/fetch-test-data.sh
+
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 
@@ -195,6 +233,24 @@ jobs:
 
       - name: Fetch FFmpeg
         run: ./scripts/fetch-ffmpeg.sh
+
+      - name: Cache whisper.cpp
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper-macos
+          key: whisper-macos-arm64-${{ hashFiles('scripts/fetch-whisper.sh') }}
+
+      - name: Build whisper.cpp
+        run: ./scripts/fetch-whisper.sh
+
+      - name: Cache test data
+        uses: actions/cache@v4
+        with:
+          path: third_party/whisper-models
+          key: test-data-${{ hashFiles('scripts/fetch-test-data.sh') }}
+
+      - name: Fetch test data
+        run: ./scripts/fetch-test-data.sh
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -251,7 +307,7 @@ jobs:
             echo "| \`OpenMediaEncoder-${VERSION}-x86_64.AppImage\` | **Linux**: \`chmod +x\` the file and run it |"
             echo "| \`OpenMediaEncoder-${VERSION}-linux-x86_64.tar.gz\` | **Linux, unpacked**: extract and run \`open-media-encoder\` (no FUSE needed) |"
             echo
-            echo "FFmpeg is included; nothing else to install. Windows 10/11 x64, or 64-bit Linux with glibc 2.35+"
+            echo "FFmpeg and whisper.cpp are included; nothing else to install. Windows 10/11 x64, or 64-bit Linux with glibc 2.35+"
             echo "(Ubuntu 22.04, Debian 12, Fedora 36 or newer). Verify downloads with \`SHA256SUMS.txt\`."
             echo
             awk -v v="$VERSION" '

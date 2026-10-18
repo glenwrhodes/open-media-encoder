@@ -31,17 +31,21 @@ cd open-media-encoder
 .\build.ps1 -Test
 ```
 
-`build.ps1` downloads the pinned FFmpeg into `third_party/ffmpeg` (verified by SHA-256),
-configures CMake, builds, deploys the Qt DLLs into `build\` so the exe runs in place, and runs
-the tests. Use `-QtDir` and `-ToolsDir` if Qt isn't in `C:\Qt`.
+`build.ps1` downloads the pinned FFmpeg and whisper.cpp into `third_party/` (verified by
+SHA-256), configures CMake, builds, deploys the Qt DLLs into `build\` so the exe runs in place,
+and runs the tests. Use `-QtDir` and `-ToolsDir` if Qt isn't in `C:\Qt`.
 
-**Qt Creator:** open `CMakeLists.txt`, pick a Qt 6 kit, and run `scripts\fetch-ffmpeg.ps1` once
-so the bundled FFmpeg is copied next to the executable.
+The automatic-captions test needs a small speech model and sample; it is skipped without them.
+To run it, fetch them once with `scripts/fetch-test-data.sh` (from Git Bash on Windows).
+
+**Qt Creator:** open `CMakeLists.txt`, pick a Qt 6 kit, and run `scripts\fetch-ffmpeg.ps1` and
+`scripts\fetch-whisper.ps1` once so the bundled tools are copied next to the executable.
 
 **Visual Studio / MSVC:** from a *Developer PowerShell for VS 2022*:
 
 ```powershell
 .\scripts\fetch-ffmpeg.ps1
+.\scripts\fetch-whisper.ps1
 cmake -S . -B build-msvc -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=C:\Qt\6.10.2\msvc2022_64
 cmake --build build-msvc
 ctest --test-dir build-msvc --output-on-failure
@@ -62,15 +66,21 @@ src/
     ExportSettings.*        One output's settings (video, audio, effects) + JSON (de)serialisation
     MediaInfo.*             ffprobe wrapper
     CommandBuilder.*        Turns a BuildRequest into FFmpeg arguments: filter graph (crop, scale,
-                            fps, LUT, overlays, drawtext, subtitles, limiter, GIF palette), rate
-                            control, two-pass, containers, previews
+                            blurred background, silence cuts, fps, LUT, overlays, drawtext,
+                            subtitles, limiter, GIF palette), rate control (incl. target file size),
+                            two-pass, subtitle tracks, containers, previews
     PresetManager.*         Built-in system presets + user presets on disk
     QueueModel.*            Qt item model for sources -> outputs; persistence
-    EncoderEngine.*         Runs ffmpeg processes, parses -progress, pause/resume, logging
+    EncoderEngine.*         Runs one output as steps (silence scan, VMAF quality search, speech to
+                            text, then ffmpeg passes and a size check), parses -progress,
+                            pause/resume, logging
+    QualityProbe.*          Test encodes scored with VMAF: QualitySearch (target quality) and
+                            TestEncode (the Compare tab)
+    Whisper.*               Speech models (download + SHA-256), SRT/ASS caption files
     WatchFolderManager.*    Polls watch folders and reports files once copying has finished
     MediaFileModel.*        Sortable/filterable file list for the Media Browser (incl. metadata columns)
     MediaInfoCache.*        Background ffprobe with a cache keyed by path, size and mtime
-    SystemIntegration.*     Keep-awake, sleep and shutdown hooks
+    SystemIntegration.*     Keep-awake, sleep and shutdown hooks, pausing child processes
     StreamRecorder.*        Live stream recording (FFmpeg stream copy, reconnects, MP4 conversion)
     YtDlp.*                 Downloads, verifies and updates yt-dlp for web page links
     AppSettings.*           Preferences and well-known paths
@@ -81,11 +91,13 @@ src/
     PresetBrowser.*, MediaBrowser.*, WatchFolderPanel.*, EncodingPanel.*, PreferencesDialog.*
     StreamRecorderPanel.*   Paste-a-link recording panel
     FrameGrabber.*          Async single-frame previews via FFmpeg
+    FramePreview.*          Preview display, crop overlay and the before/after divider with zoom
+    SpeechModelPrompt.*     Asks to download the speech model, with progress
     TaskbarProgress.*       Progress on the Windows taskbar button
     Theme.*                 Dark theme and runtime-drawn icons
   main.cpp                  App start-up and the command-line interface
 tests/tst_core.cpp          Integration tests (real FFmpeg encodes)
-scripts/                    fetch-ffmpeg.ps1, package.ps1
+scripts/                    fetch-ffmpeg.*, fetch-whisper.*, fetch-test-data.sh, package scripts
 installer/                  Inno Setup script
 ```
 

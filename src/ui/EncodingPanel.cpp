@@ -104,7 +104,9 @@ void EncodingPanel::onTaskProgress(const QString &outputId, const EncodeStats &s
     it->bar->setValue(int(st.progress * 1000));
     QStringList parts;
     parts << QStringLiteral("%1%").arg(st.progress * 100, 0, 'f', 1);
-    if (st.passes > 1)
+    if (!st.phase.isEmpty())
+        parts << st.phase; // analysis steps, passes, re-encodes
+    else if (st.passes > 1)
         parts << QStringLiteral("Pass %1 of %2").arg(st.pass).arg(st.passes);
     parts << QStringLiteral("Elapsed %1").arg(formatDuration(st.elapsed));
     if (st.remaining >= 0)
