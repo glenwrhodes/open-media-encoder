@@ -61,6 +61,8 @@ private:
 
     void nextStep();
     void detectSilence();
+    void findFillers();
+    void applyCuts(const TimeRanges &fillerCuts, int fillerCount);
     void findQuality();
     void transcribe();
     void transcribeAudio(const QString &wav);
@@ -100,7 +102,9 @@ private:
     QStringList m_stderrTail;
     QStringList m_tempFiles;
     QString m_lastCommand;
-    QString m_captionsSrt; // cleaned captions, copied next to the output when asked for
+    TimeRanges m_gaps;           // quiet stretches found by the silence scan
+    double m_scanDuration = 0.0; // length of what was scanned
+    QString m_captionsSrt;       // cleaned captions, copied next to the output when asked for
     QStringList m_notes;
     QStringList m_extraFiles;
     EncodeStats m_stats;

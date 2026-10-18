@@ -229,6 +229,9 @@ private:
     QDoubleSpinBox *m_silenceThreshold = nullptr;
     QDoubleSpinBox *m_silenceMin = nullptr;
     QDoubleSpinBox *m_silencePad = nullptr;
+    QCheckBox *m_fillers = nullptr;
+    QLineEdit *m_fillerList = nullptr;
+    QLabel *m_fillerNote = nullptr;
 
     // advanced
     QLineEdit *m_vExtra = nullptr;

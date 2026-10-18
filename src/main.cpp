@@ -152,6 +152,8 @@ bool applyCliOverrides(const QCommandLineParser &parser, ExportSettings &s, QTex
     }
     if (parser.isSet("remove-silence"))
         fx.removeSilence = true;
+    if (parser.isSet("remove-fillers"))
+        fx.removeSilence = fx.removeFillers = true;
     if (parser.isSet("captions")) {
         fx.autoCaptions = true;
         fx.captionSaveSrt = fx.captionEmbed = fx.captionBurn = false;
@@ -241,9 +243,9 @@ int runCli(QApplication &app, const QCommandLineParser &parser)
     if (!applyCliOverrides(parser, settings, err))
         return 2;
     const bool customised = settings.toJson() != preset->settings.toJson();
-    if (settings.effects.autoCaptions) {
+    if (settings.effects.autoCaptions || (settings.effects.removeSilence && settings.effects.removeFillers)) {
         if (AppSettings::whisperCliPath().isEmpty()) {
-            err << "Captions need whisper-cli, which wasn't found next to the app\n";
+            err << "Captions and filler-word removal need whisper-cli, which wasn't found next to the app\n";
             return 1;
         }
         if (!ensureSpeechModelCli(out, err))
@@ -517,6 +519,9 @@ int main(int argc, char *argv[])
     parser.addOption(
         {"scale", QStringLiteral("With --size: fit, fill, stretch or blur (fit on a blurred background)."), "mode"});
     parser.addOption({"remove-silence", QStringLiteral("With --preset: cut pauses from the video and audio.")});
+    parser.addOption(
+        {"remove-fillers", QStringLiteral("With --preset: cut pauses and filler words (um, uh...) found by speech "
+                                          "recognition.")});
     parser.addOption({"captions",
                       QStringLiteral("With --preset: generate captions from speech: srt (file next to the output), "
                                      "embed (subtitle track) and/or burn, comma separated."),

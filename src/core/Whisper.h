@@ -1,5 +1,7 @@
 #pragma once
 
+#include "CommandBuilder.h"
+
 #include <QByteArray>
 #include <QList>
 #include <QObject>
@@ -51,6 +53,29 @@ bool writeSrt(const QList<Cue> &cues, const QString &path);
 bool writeAss(const QList<Cue> &cues, const QString &path, const QSize &frame, int size);
 // Drops whisper's non-speech markers such as [BLANK_AUDIO] and tidies the text.
 QList<Cue> cleanCues(const QList<Cue> &cues);
+
+// ---- filler words
+
+struct Word {
+    QString text;
+    double time = 0.0; // seconds; whisper's DTW timestamp, which lands close to where the word ends
+};
+// Words from whisper-cli's full JSON output (-ojf), joining sub-word tokens.
+QList<Word> parseWords(const QString &jsonPath);
+// The --dtw alignment preset for a model file ("base", "small", "large.v3.turbo"...), empty if unknown.
+QString dtwPreset(const QString &modelPath);
+QString defaultFillerWords();
+QStringList fillerWords(const QString &list); // "um, Uh" -> {"um", "uh"}
+// Whisper leaves fillers out of transcripts unless its prompt shows them.
+QString fillerPrompt();
+// Cuts that take out sounds holding nothing but filler words. `gaps` are the quiet stretches of the clip
+// (silencedetect); a sound is the audio between two gaps. Only sounds whose words are all fillers are
+// cut, so a filler run together with a real word is left alone rather than clipping the word. Each
+// cut keeps up to `padding` of the pause on either side.
+TimeRanges fillerCuts(const QList<Word> &words, const TimeRanges &gaps, double duration, double padding,
+                      const QStringList &fillers, int *count = nullptr);
+// `keep` with `cuts` taken out; pieces shorter than minLength are dropped.
+TimeRanges subtractRanges(const TimeRanges &keep, const TimeRanges &cuts, double minLength = 0.05);
 
 } // namespace Whisper
 

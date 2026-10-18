@@ -16,6 +16,8 @@ concurrency:
 
 env:
   QT_VERSION: '6.10.2'
+  # Tests that need VMAF or whisper.cpp fail instead of skipping when those are missing.
+  OME_REQUIRE_ALL_TESTS: '1'
 
 jobs:
   build:

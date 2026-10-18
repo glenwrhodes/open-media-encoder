@@ -6,11 +6,15 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QTextStream>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -225,6 +229,137 @@ bool writeAss(const QList<Cue> &cues, const QString &path, const QSize &frame, i
         return false;
     f.write(out.toUtf8());
     return f.commit();
+}
+
+// ---------------------------------------------------------------- filler words
+
+QList<Word> parseWords(const QString &jsonPath)
+{
+    QFile f(jsonPath);
+    if (!f.open(QIODevice::ReadOnly))
+        return {};
+    const QJsonArray segments = QJsonDocument::fromJson(f.readAll()).object().value("transcription").toArray();
+    QList<Word> words;
+    static const QRegularExpression punct(QStringLiteral("[\\p{P}\\p{S}]"));
+    for (const QJsonValue &seg : segments) {
+        for (const QJsonValue &tv : seg.toObject().value("tokens").toArray()) {
+            const QJsonObject t = tv.toObject();
+            const QString text = t.value("text").toString();
+            if (text.startsWith(QStringLiteral("[_")))
+                continue; // timestamps and other special tokens
+            const double dtw = t.value("t_dtw").toDouble(-1);
+            const double time = dtw >= 0 ? dtw / 100.0 : t.value("offsets").toObject().value("to").toDouble() / 1000.0;
+            QString clean = text;
+            clean.remove(punct);
+            // A token starting with a space begins a word; others continue the previous one.
+            if (text.startsWith(' ') || words.isEmpty()) {
+                if (clean.trimmed().isEmpty())
+                    continue;
+                words << Word{clean.trimmed(), time};
+            } else if (!clean.trimmed().isEmpty()) {
+                words.last().text += clean.trimmed();
+                words.last().time = time;
+            }
+        }
+    }
+    return words;
+}
+
+QString dtwPreset(const QString &modelPath)
+{
+    // ggml-small-q8_0.bin -> small, ggml-large-v3-turbo-q5_0.bin -> large.v3.turbo
+    QString name = QFileInfo(modelPath).completeBaseName();
+    if (!name.startsWith(QStringLiteral("ggml-")))
+        return {};
+    name = name.mid(5);
+    name.remove(QRegularExpression(QStringLiteral("-q[0-9]_[0-9]$")));
+    name.replace('-', '.');
+    static const QStringList known = {"tiny",   "tiny.en",   "base",     "base.en",  "small",    "small.en",
+                                      "medium", "medium.en", "large.v1", "large.v2", "large.v3", "large.v3.turbo"};
+    return known.contains(name) ? name : QString();
+}
+
+QString defaultFillerWords() { return QStringLiteral("um, uh, uhm, umm, er, erm, ah, hm, hmm, mm, mhm"); }
+
+QStringList fillerWords(const QString &list)
+{
+    QStringList out;
+    for (const QString &w : list.toLower().split(QRegularExpression(QStringLiteral("[,;\\s]+")), Qt::SkipEmptyParts))
+        out << w;
+    return out;
+}
+
+QString fillerPrompt()
+{
+    return QStringLiteral("Umm, let me think like, hmm... Okay, here's what I'm, like, thinking. Uh, so, er, yeah.");
+}
+
+TimeRanges fillerCuts(const QList<Word> &words, const TimeRanges &gaps, double duration, double padding,
+                      const QStringList &fillers, int *count)
+{
+    // The sounds between the gaps.
+    TimeRanges sounds;
+    double pos = 0.0;
+    for (const auto &g : gaps) {
+        if (g.first > pos + 0.001)
+            sounds << qMakePair(pos, g.first);
+        pos = qMax(pos, g.second);
+    }
+    if (duration > pos + 0.001)
+        sounds << qMakePair(pos, duration);
+    if (count)
+        *count = 0;
+    if (sounds.isEmpty())
+        return {};
+
+    // Words to sounds, in order: a word belongs to the latest sound that began before its timestamp
+    // (DTW timestamps fall near the end of a word, sometimes a little after the sound).
+    QList<QStringList> inSound(sounds.size());
+    int cur = 0;
+    for (const Word &w : words) {
+        while (cur + 1 < sounds.size() && sounds[cur + 1].first <= w.time + 0.05)
+            ++cur;
+        inSound[cur] << w.text.toLower();
+    }
+
+    TimeRanges cuts;
+    for (int i = 0; i < sounds.size(); ++i) {
+        const QStringList &ws = inSound[i];
+        const double a = sounds[i].first;
+        const double b = sounds[i].second;
+        bool allFillers = !ws.isEmpty();
+        for (const QString &w : ws)
+            allFillers = allFillers && fillers.contains(w);
+        // A long sound with only a filler in it means words were missed: leave it.
+        if (!allFillers || b - a > 1.5)
+            continue;
+        const double before = i > 0 ? a - sounds[i - 1].second : a;
+        const double after = i + 1 < sounds.size() ? sounds[i + 1].first - b : duration - b;
+        cuts << qMakePair(a - qMax(0.0, before - padding), b + qMax(0.0, after - padding));
+        if (count)
+            ++*count;
+    }
+    return cuts;
+}
+
+TimeRanges subtractRanges(const TimeRanges &keep, const TimeRanges &cuts, double minLength)
+{
+    TimeRanges sorted = cuts;
+    std::sort(sorted.begin(), sorted.end());
+    TimeRanges out;
+    for (const auto &k : keep) {
+        double start = k.first;
+        for (const auto &c : sorted) {
+            if (c.second <= start || c.first >= k.second)
+                continue;
+            if (c.first - start >= minLength)
+                out << qMakePair(start, c.first);
+            start = qMax(start, c.second);
+        }
+        if (k.second - start >= minLength)
+            out << qMakePair(start, k.second);
+    }
+    return out;
 }
 
 } // namespace Whisper

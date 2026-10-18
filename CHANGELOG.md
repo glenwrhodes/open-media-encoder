@@ -29,11 +29,15 @@ All notable changes to this project are documented here. The format is based on
 - **Remove silence**: cuts pauses out of the video and audio together, frame-accurately, with a
   silence level, shortest pause and padding around speech you can set. New "Talk & Tutorial -
   Silence Removed" and "Podcast - Silence Removed" presets.
+- **Remove filler words** (advanced option of Remove Silence): cuts "um", "uh", "er", "hmm" and any
+  words you add. Speech recognition with word timings finds them and the audio gives the exact cut
+  points; only fillers said on their own are cut, so no real words are clipped. Uses the same
+  speech model as captions. On the command line: `--remove-fillers`.
 - **Blurred background** scaling: fit the whole picture into a different frame shape (such as a
   landscape clip as a vertical Short or Reel) over a blurred, darkened copy of itself instead of
   black bars or cropping. New Blurred Background presets for YouTube Shorts, TikTok, Instagram
   Reels, square and 16:9.
-- Command line: `--target-size`, `--target-vmaf`, `--size`, `--scale`, `--remove-silence`,
+- Command line: `--target-size`, `--target-vmaf`, `--size`, `--scale`, `--remove-silence`, `--remove-fillers`,
   `--captions`, `--language` and `--translate` work on top of any preset.
 - The Encoding panel and the command line show what an encode is doing (finding pauses, finding
   quality, transcribing, pass 1 of 2), and the log records what each step found.

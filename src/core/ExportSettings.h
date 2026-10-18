@@ -95,6 +95,8 @@ struct EffectsSettings {
     double silenceThreshold = -40.0; // dB; quieter than this counts as silence
     double silenceMinDuration = 0.8; // seconds of silence before it is cut
     double silencePadding = 0.2;     // seconds of the pause kept on each side of the speech
+    bool removeFillers = false;      // also cut filler words ("um", "uh") found by speech recognition
+    QString fillerWords = "um, uh, uhm, umm, er, erm, ah, hm, hmm, mm, mhm";
 
     bool cropEnabled = false;
     int cropLeft = 0;

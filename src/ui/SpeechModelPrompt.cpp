@@ -57,17 +57,18 @@ bool download(QWidget *parent, const QString &modelId)
 bool ensureInstalled(QWidget *parent)
 {
     if (AppSettings::whisperCliPath().isEmpty()) {
-        QMessageBox::warning(parent, QStringLiteral("Automatic Captions"),
-                             QStringLiteral("Automatic captions need whisper-cli, which should come with the app "
-                                            "but wasn't found. Reinstalling the app will restore it."));
+        QMessageBox::warning(
+            parent, QStringLiteral("Speech Recognition"),
+            QStringLiteral("Captions and filler-word removal need whisper-cli, which should come with the app "
+                           "but wasn't found. Reinstalling the app will restore it."));
         return false;
     }
     if (!Whisper::activeModelPath().isEmpty())
         return true;
     const Whisper::Model *m = Whisper::model(Whisper::selectedModelId());
-    QMessageBox box(QMessageBox::Question, QStringLiteral("Automatic Captions"),
-                    QStringLiteral("Automatic captions turn the speech in your videos into text, entirely on this "
-                                   "computer. They need a speech model, downloaded once:\n\n%1: %2\n\n"
+    QMessageBox box(QMessageBox::Question, QStringLiteral("Speech Recognition"),
+                    QStringLiteral("Automatic captions and filler-word removal recognize the speech in your videos, "
+                                   "entirely on this computer. They need a speech model, downloaded once:\n\n%1: %2\n\n"
                                    "Download it now? You can pick a faster or more accurate model in "
                                    "Preferences > Captions.")
                         .arg(m->label, m->description),

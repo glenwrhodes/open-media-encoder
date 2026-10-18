@@ -1057,7 +1057,9 @@ void MainWindow::startQueue()
     bool needsSpeech = false;
     for (const SourceItem &s : m_model->sources())
         for (const OutputItem &o : s.outputs)
-            if (o.status == OutputStatus::Ready && o.settings.effects.autoCaptions)
+            if (o.status == OutputStatus::Ready &&
+                (o.settings.effects.autoCaptions ||
+                 (o.settings.effects.removeSilence && o.settings.effects.removeFillers)))
                 needsSpeech = true;
     if (needsSpeech && !m_engine->isRunning())
         SpeechModelPrompt::ensureInstalled(this);

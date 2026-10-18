@@ -885,6 +885,20 @@ QWidget *ExportSettingsDialog::buildEffectsTab()
                                                 "aren't clipped"));
         connect(m_silencePad, &QDoubleSpinBox::valueChanged, this, &ExportSettingsDialog::onFieldChanged);
         f->addRow(QStringLiteral("Keep Around Speech:"), m_silencePad);
+        m_fillers = new QCheckBox(QStringLiteral("Also remove filler words (um, uh, er...)"));
+        m_fillers->setToolTip(QStringLiteral("Uses speech recognition (the captions speech model) to find filler "
+                                             "words said on their own and cuts them out. A filler that runs into "
+                                             "another word is left in, so no real words are clipped."));
+        connect(m_fillers, &QCheckBox::toggled, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QString(), m_fillers);
+        m_fillerList = new QLineEdit;
+        m_fillerList->setPlaceholderText(Whisper::defaultFillerWords());
+        m_fillerList->setToolTip(QStringLiteral("Words to cut when they're said on their own, separated by commas. "
+                                                "Add words like \"like\" or \"so\" at your own risk."));
+        connect(m_fillerList, &QLineEdit::editingFinished, this, &ExportSettingsDialog::onFieldChanged);
+        f->addRow(QStringLiteral("Filler Words:"), m_fillerList);
+        m_fillerNote = muted(QString());
+        f->addRow(QString(), m_fillerNote);
     }
     v->addStretch();
 
@@ -1179,6 +1193,8 @@ void ExportSettingsDialog::loadToUi()
     m_silenceThreshold->setValue(e.silenceThreshold);
     m_silenceMin->setValue(e.silenceMinDuration);
     m_silencePad->setValue(e.silencePadding);
+    m_fillers->setChecked(e.removeFillers);
+    m_fillerList->setText(e.fillerWords);
 
     m_vExtra->setText(s.video.extraArgs);
     m_aExtra->setText(s.audio.extraArgs);
@@ -1361,6 +1377,8 @@ void ExportSettingsDialog::readFromUi()
     e.silenceThreshold = m_silenceThreshold->value();
     e.silenceMinDuration = m_silenceMin->value();
     e.silencePadding = m_silencePad->value();
+    e.removeFillers = m_fillers->isChecked();
+    e.fillerWords = m_fillerList->text().trimmed().isEmpty() ? Whisper::defaultFillerWords() : m_fillerList->text();
 }
 
 void ExportSettingsDialog::refreshPresetCombo()
@@ -1595,6 +1613,13 @@ void ExportSettingsDialog::updateDerived()
                                                "now</a> or when you click OK.")
                                     .arg(model->label.toHtmlEscaped()));
     }
+
+    m_fillerList->setEnabled(fx.removeFillers);
+    m_fillerNote->setVisible(fx.removeFillers);
+    m_fillerNote->setText(Whisper::activeModelPath().isEmpty()
+                              ? QStringLiteral("Needs the speech model (downloaded when you click OK). Finding filler "
+                                               "words takes about as long as making captions.")
+                              : QStringLiteral("Finding filler words takes about as long as making captions."));
 
     // Compare needs a video source and a video output that isn't a still image.
     const bool comparable =
@@ -1832,7 +1857,7 @@ void ExportSettingsDialog::accept()
         return;
     }
     // Offer the speech model now rather than failing at encode time (declining keeps the settings).
-    if (m_settings.effects.autoCaptions)
+    if (m_settings.effects.autoCaptions || (m_settings.effects.removeSilence && m_settings.effects.removeFillers))
         SpeechModelPrompt::ensureInstalled(this);
     if (m_presetId.isEmpty())
         m_settings.presetName = QStringLiteral("Custom");

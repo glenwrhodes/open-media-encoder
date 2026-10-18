@@ -69,6 +69,15 @@ private:
     QHash<QTcpSocket *, QByteArray> m_pending;
 };
 
+// Tests needing optional tools (VMAF, whisper.cpp and its test model) are skipped locally without
+// them; CI sets OME_REQUIRE_ALL_TESTS so a missing tool fails the build instead of passing quietly.
+#define SKIP_OR_FAIL(why)                                                                                              \
+    do {                                                                                                               \
+        if (qEnvironmentVariableIsSet("OME_REQUIRE_ALL_TESTS"))                                                        \
+            QFAIL(why);                                                                                                \
+        QSKIP(why);                                                                                                    \
+    } while (false)
+
 class CoreTests : public QObject
 {
     Q_OBJECT
@@ -109,6 +118,8 @@ private slots:
     void removeSilence();
     void captionHelpers();
     void automaticCaptions();
+    void fillerWordHelpers();
+    void removeFillerWords();
     void testEncodeCompare();
     void hardwareEncoderCommands(); // keep last: it swaps the encoder list and probes again afterwards
 
@@ -1266,7 +1277,7 @@ void CoreTests::targetFileSize()
 void CoreTests::targetQualityVmaf()
 {
     if (!QualityProbe::vmafAvailable())
-        QSKIP("This FFmpeg build has no libvmaf");
+        SKIP_OR_FAIL("This FFmpeg build has no libvmaf");
     // Sample placement: one sample for short clips, several spread over longer ones.
     BuildRequest r = requestFor(ExportSettings(), {});
     r.outPoint = -1;
@@ -1482,9 +1493,9 @@ void CoreTests::automaticCaptions()
     const QString model = data.filePath("ggml-tiny-q5_1.bin");
     const QString speech = data.filePath("jfk.wav");
     if (AppSettings::whisperCliPath().isEmpty())
-        QSKIP("whisper-cli not bundled (run scripts/fetch-whisper)");
+        SKIP_OR_FAIL("whisper-cli not bundled (run scripts/fetch-whisper)");
     if (!QFileInfo::exists(model) || !QFileInfo::exists(speech))
-        QSKIP("No test speech model in third_party/whisper-models");
+        SKIP_OR_FAIL("No test speech model in third_party/whisper-models");
     qputenv("OME_WHISPER_MODEL", QFile::encodeName(model));
 
     const QString clip = m_dir.filePath("speech clip.mp4");
@@ -1526,6 +1537,103 @@ void CoreTests::automaticCaptions()
     QCOMPARE(ffprobe({"-select_streams", "s", "-show_entries", "stream=codec_name", "-of", "csv=p=0", o->finalPath}),
              QString("mov_text"));
     QVERIFY2(o->message.contains("Captions"), qPrintable(o->message));
+}
+
+void CoreTests::fillerWordHelpers()
+{
+    QCOMPARE(Whisper::dtwPreset("C:/m/ggml-small-q8_0.bin"), QString("small"));
+    QCOMPARE(Whisper::dtwPreset("/m/ggml-large-v3-turbo-q5_0.bin"), QString("large.v3.turbo"));
+    QCOMPARE(Whisper::dtwPreset("/m/ggml-base.en.bin"), QString("base.en"));
+    QCOMPARE(Whisper::dtwPreset("/m/custom.bin"), QString());
+    QCOMPARE(Whisper::fillerWords("um, Uh;  ERM hmm"), QStringList({"um", "uh", "erm", "hmm"}));
+
+    // whisper-cli -ojf output: special tokens skipped, punctuation dropped, sub-word tokens joined.
+    const QString json = m_dir.filePath("words.json");
+    {
+        QFile f(json);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(R"({"transcription": [{"tokens": [
+            {"text": "[_BEG_]", "offsets": {"from": 0, "to": 0}, "t_dtw": -1},
+            {"text": " Hm", "offsets": {"from": 12680, "to": 13910}, "t_dtw": 1306},
+            {"text": ",", "offsets": {"from": 14860, "to": 16010}, "t_dtw": 1358},
+            {"text": " let", "offsets": {"from": 16010, "to": 18560}, "t_dtw": 1380},
+            {"text": " encod", "offsets": {"from": 18600, "to": 18700}, "t_dtw": 1400},
+            {"text": "ing", "offsets": {"from": 18700, "to": 18800}, "t_dtw": 1420},
+            {"text": " Uh", "offsets": {"from": 19000, "to": 19500}, "t_dtw": -1}]}]})");
+    }
+    const QList<Whisper::Word> words = Whisper::parseWords(json);
+    QCOMPARE(words.size(), 4);
+    QCOMPARE(words[0].text, QString("Hm"));
+    QCOMPARE(words[0].time, 13.06);
+    QCOMPARE(words[2].text, QString("encoding"));
+    QCOMPARE(words[2].time, 14.2);
+    QCOMPARE(words[3].time, 19.5); // no DTW timestamp: the token's end
+
+    // Sounds between gaps: "welcome" 0-1.4 | "um" 2.3-2.5 | "today we" 3.0-4.2 | "is uh" 4.6-4.8 | "a file" 5.2-6.0
+    const TimeRanges gaps = {{1.4, 2.3}, {2.5, 3.0}, {4.2, 4.6}, {4.8, 5.2}};
+    const QList<Whisper::Word> spoken = {{"Welcome", 1.2}, {"Um", 2.6},  {"today", 3.3}, {"we", 4.3},
+                                         {"is", 4.65},     {"uh", 4.85}, {"a", 5.4},     {"file", 6.0}};
+    int count = 0;
+    const TimeRanges cuts =
+        Whisper::fillerCuts(spoken, gaps, 6.0, 0.2, Whisper::fillerWords(Whisper::defaultFillerWords()), &count);
+    // Only the "um" standing on its own is cut; "uh" shares its sound with "is" and stays.
+    QCOMPARE(count, 1);
+    QCOMPARE(cuts.size(), 1);
+    QVERIFY(qAbs(cuts[0].first - 1.6) < 1e-6);  // 0.2 s of the pause before it is kept
+    QVERIFY(qAbs(cuts[0].second - 2.8) < 1e-6); // and 0.2 s of the pause after it
+    // A long sound with only a filler in it means words were missed: never cut.
+    QCOMPARE(Whisper::fillerCuts({{"um", 3.0}}, {{0.0, 1.0}}, 4.0, 0.2, {"um"}).size(), 0);
+
+    const TimeRanges kept = Whisper::subtractRanges({{0.0, 6.0}}, cuts);
+    QCOMPARE(kept.size(), 2);
+    QVERIFY(qAbs(kept[0].second - 1.6) < 1e-6 && qAbs(kept[1].first - 2.8) < 1e-6);
+}
+
+void CoreTests::removeFillerWords()
+{
+    const QDir data(QStringLiteral(OME_TEST_DATA_DIR));
+    const QString model = data.filePath("ggml-tiny-q5_1.bin");
+    if (AppSettings::whisperCliPath().isEmpty())
+        SKIP_OR_FAIL("whisper-cli not bundled (run scripts/fetch-whisper)");
+    if (!QFileInfo::exists(model))
+        SKIP_OR_FAIL("No test speech model in third_party/whisper-models");
+    qputenv("OME_WHISPER_MODEL", QFile::encodeName(model));
+
+    // Narration with "um", "uh", "hm" and "er" said on their own.
+    const QString speech = QStringLiteral(OME_TESTS_DIR) + QStringLiteral("/filler-narration.opus");
+    const QString clip = m_dir.filePath("narration.mp4");
+    QString err;
+    QVERIFY2(runFfmpeg({"-y", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=25:d=19", "-i", speech, "-c:v", "libx264",
+                        "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip},
+                       &err),
+             qPrintable(err));
+    const MediaInfo info = MediaInfo::probe(AppSettings::ffprobePath(), clip);
+
+    ExportSettings s;
+    s.setFormat("h264");
+    s.video.speedPreset = "ultrafast";
+    s.effects.removeSilence = true;
+    s.effects.silenceMinDuration = 0.5;
+    QueueModel model2;
+    const QString sid = model2.addSource({clip});
+    model2.setSourceInfo(sid, info, 0);
+    QDir().mkpath(m_dir.filePath("fillers"));
+    const QString pausesOnly = model2.addOutput(sid, s, {}, m_dir.filePath("fillers"));
+    s.effects.removeFillers = true;
+    const QString withFillers = model2.addOutput(sid, s, {}, m_dir.filePath("fillers"));
+    QVERIFY(runQueue(model2, 600000));
+    qunsetenv("OME_WHISPER_MODEL");
+
+    const OutputItem *a = model2.output(pausesOnly);
+    const OutputItem *b = model2.output(withFillers);
+    QVERIFY2(a->status == OutputStatus::Done, qPrintable(a->message));
+    QVERIFY2(b->status == OutputStatus::Done, qPrintable(b->message));
+    static const QRegularExpression countRe(QStringLiteral("and ([0-9]+) filler word"));
+    const auto m = countRe.match(b->message);
+    QVERIFY2(m.hasMatch() && m.captured(1).toInt() >= 3, qPrintable(b->message));
+    const double da = MediaInfo::probe(AppSettings::ffprobePath(), a->finalPath).duration;
+    const double db = MediaInfo::probe(AppSettings::ffprobePath(), b->finalPath).duration;
+    QVERIFY2(db < da - 0.5, qPrintable(QString("pauses only %1 s, with fillers %2 s").arg(da).arg(db)));
 }
 
 void CoreTests::testEncodeCompare()

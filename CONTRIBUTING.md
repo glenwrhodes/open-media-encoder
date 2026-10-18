@@ -76,7 +76,8 @@ src/
                             pause/resume, logging
     QualityProbe.*          Test encodes scored with VMAF: QualitySearch (target quality) and
                             TestEncode (the Compare tab)
-    Whisper.*               Speech models (download + SHA-256), SRT/ASS caption files
+    Whisper.*               Speech models (download + SHA-256), SRT/ASS caption files, word timings
+                            and filler-word cuts
     WatchFolderManager.*    Polls watch folders and reports files once copying has finished
     MediaFileModel.*        Sortable/filterable file list for the Media Browser (incl. metadata columns)
     MediaInfoCache.*        Background ffprobe with a cache keyed by path, size and mtime

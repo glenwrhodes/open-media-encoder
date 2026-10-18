@@ -52,7 +52,7 @@ EncodeTask::EncodeTask(const QString &sourceId, const QString &outputId, const B
     const bool video = s.video.enabled && fmt && fmt->hasVideo() && src.hasVideo && !src.isStill;
     if (s.effects.removeSilence && src.hasAudio && !src.isStill) {
         m_steps << Step::Silence;
-        m_weights << 0.15;
+        m_weights << (s.effects.removeFillers ? 1.0 : 0.15);
     } else if (s.effects.removeSilence) {
         m_notes << QStringLiteral("Remove silence: skipped, the source has no audio");
     }
@@ -139,10 +139,14 @@ void EncodeTask::detectSilence()
     BuildRequest req = m_req;
     req.keepRanges.clear();
     const double duration = CommandBuilder::outputDuration(req);
+    m_scanDuration = duration;
+    // Filler words need every short gap between sounds, not just pauses long enough to cut.
+    const double shortest = fx.removeFillers ? qMin(0.1, fx.silenceMinDuration) : fx.silenceMinDuration;
+    const double scanShare = fx.removeFillers ? 0.2 : 1.0;
     const BuildResult r = CommandBuilder::buildAudioExtract(
         req,
         QStringLiteral("silencedetect=noise=%1dB:d=%2")
-            .arg(QString::number(fx.silenceThreshold, 'f', 1), QString::number(fx.silenceMinDuration, 'f', 2)),
+            .arg(QString::number(fx.silenceThreshold, 'f', 1), QString::number(shortest, 'f', 2)),
         {"-f", "null", "-"});
     m_tempFiles << r.tempFiles;
     if (!r.ok()) {
@@ -163,25 +167,13 @@ void EncodeTask::detectSilence()
             // A silence still open at the end of the clip runs to the end.
             if (!silences->isEmpty() && silences->last().second < 0)
                 silences->last().second = duration;
-            const TimeRanges keep =
-                CommandBuilder::keepRangesFromSilences(*silences, duration, m_req.settings.effects.silencePadding);
-            double kept = 0.0;
-            for (const auto &k : keep)
-                kept += k.second - k.first;
-            if (keep.isEmpty() || kept < 0.1) {
-                fail(QStringLiteral("The audio is silent throughout, so there is nothing left after removing silence"));
-                return;
-            }
-            if (keep.size() == 1 && keep.first().first <= 0.001 && keep.first().second >= duration - 0.001) {
-                m_notes << QStringLiteral("Remove silence: no pauses long enough to cut");
-            } else {
-                m_req.keepRanges = keep;
-                m_notes << QStringLiteral("Remove silence: cut %1 of pauses (%2 kept of %3)")
-                               .arg(formatDuration(duration - kept), formatDuration(kept), formatDuration(duration));
-            }
-            nextStep();
+            m_gaps = *silences;
+            if (m_req.settings.effects.removeFillers)
+                findFillers();
+            else
+                applyCuts({}, 0);
         },
-        [this, silences, duration](const QString &line) {
+        [this, silences, duration, scanShare](const QString &line) {
             const auto s = startRe.match(line);
             if (s.hasMatch()) {
                 *silences << qMakePair(qMax(0.0, s.captured(1).toDouble()), -1.0);
@@ -193,8 +185,96 @@ void EncodeTask::detectSilence()
                 return;
             }
             if (line.startsWith(QStringLiteral("out_time_us=")) && duration > 0)
-                stepProgress(line.mid(12).toDouble() / 1e6 / duration, QStringLiteral("Finding pauses"));
+                stepProgress(scanShare * line.mid(12).toDouble() / 1e6 / duration, QStringLiteral("Finding pauses"));
         });
+}
+
+// Speech recognition with word timings finds the filler words; the gaps from the silence scan give
+// the exact places to cut.
+void EncodeTask::findFillers()
+{
+    BuildRequest req = m_req;
+    req.keepRanges.clear();
+    const QString wav = QDir(m_req.workDir).filePath(QStringLiteral("fillers.wav"));
+    const BuildResult r = CommandBuilder::buildAudioExtract(req, QStringLiteral("aresample=16000"),
+                                                            {"-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", wav});
+    m_tempFiles << r.tempFiles;
+    if (!r.ok()) {
+        fail(r.error);
+        return;
+    }
+    stepProgress(0.2, QStringLiteral("Finding filler words"));
+    m_runner->run(r.args, m_req.workDir, [this, wav](bool ok, const QString &log) {
+        if (!ok) {
+            fail(QStringLiteral("Couldn't read the audio for filler words: %1").arg(log.trimmed().section('\n', -1)));
+            return;
+        }
+        const EffectsSettings &fx = m_req.settings.effects;
+        const QString model = Whisper::activeModelPath();
+        const QString base = QDir(m_req.workDir).filePath(QStringLiteral("words"));
+        QStringList args{"-m", model, "-f", wav, "-ojf", "-of", base, "-pp", "-nfa", "-t",
+                         QString::number(qBound(1, QThread::idealThreadCount(), 8)), "-l",
+                         fx.captionLanguage.isEmpty() ? QStringLiteral("auto") : fx.captionLanguage,
+                         // Without an example, whisper tidies "um" and "uh" out of what it hears.
+                         "--prompt", Whisper::fillerPrompt()};
+        const QString dtw = Whisper::dtwPreset(model);
+        if (!dtw.isEmpty())
+            args << "--dtw" << dtw; // word timings from the attention alignment: much steadier
+        static const QRegularExpression progressRe(QStringLiteral("progress =\\s*([0-9]+)%"));
+        m_runner->runProgram(
+            AppSettings::whisperCliPath(), args, m_req.workDir,
+            [this, base](bool ok, const QString &log) {
+                if (!ok) {
+                    fail(QStringLiteral("Finding filler words failed: %1").arg(log.trimmed().section('\n', -1)));
+                    return;
+                }
+                const EffectsSettings &fx = m_req.settings.effects;
+                int count = 0;
+                const TimeRanges cuts =
+                    Whisper::fillerCuts(Whisper::parseWords(base + QStringLiteral(".json")), m_gaps, m_scanDuration,
+                                        fx.silencePadding, Whisper::fillerWords(fx.fillerWords), &count);
+                applyCuts(cuts, count);
+            },
+            [this](const QString &line) {
+                const auto p = progressRe.match(line);
+                if (p.hasMatch())
+                    stepProgress(0.3 + 0.7 * p.captured(1).toInt() / 100.0,
+                                 QStringLiteral("Finding filler words %1%").arg(p.captured(1).toInt()));
+            });
+    });
+}
+
+void EncodeTask::applyCuts(const TimeRanges &fillerCuts, int fillerCount)
+{
+    const EffectsSettings &fx = m_req.settings.effects;
+    const double duration = m_scanDuration;
+    // Pauses: the gaps at least as long as the shortest pause to cut.
+    TimeRanges pauses;
+    for (const auto &g : std::as_const(m_gaps))
+        if (g.second - g.first >= fx.silenceMinDuration - 0.001)
+            pauses << g;
+    TimeRanges keep = CommandBuilder::keepRangesFromSilences(pauses, duration, fx.silencePadding);
+    if (!fillerCuts.isEmpty())
+        keep = Whisper::subtractRanges(keep, fillerCuts);
+    double kept = 0.0;
+    for (const auto &k : keep)
+        kept += k.second - k.first;
+    if (keep.isEmpty() || kept < 0.1) {
+        fail(QStringLiteral("The audio is silent throughout, so there is nothing left after removing silence"));
+        return;
+    }
+    const QString fillers =
+        fx.removeFillers ? QStringLiteral(" and %1 filler word%2").arg(fillerCount).arg(fillerCount == 1 ? "" : "s")
+                         : QString();
+    if (keep.size() == 1 && keep.first().first <= 0.001 && keep.first().second >= duration - 0.001) {
+        m_notes << (fx.removeFillers ? QStringLiteral("Remove silence: no pauses or filler words to cut")
+                                     : QStringLiteral("Remove silence: no pauses long enough to cut"));
+    } else {
+        m_req.keepRanges = keep;
+        m_notes << QStringLiteral("Remove silence: cut %1 of pauses%2 (%3 kept of %4)")
+                       .arg(formatDuration(duration - kept), fillers, formatDuration(kept), formatDuration(duration));
+    }
+    nextStep();
 }
 
 // ---------------------------------------------------------------- target quality (VMAF)
@@ -745,12 +825,14 @@ bool EncoderEngine::startTask(const QString &sourceId, const QString &outputId)
     BuildResult check = CommandBuilder::build(req);
     for (const QString &f : check.tempFiles)
         QFile::remove(f);
-    if (check.ok() && req.settings.effects.autoCaptions && req.source.hasAudio) {
+    const EffectsSettings &fx = req.settings.effects;
+    if (check.ok() && (fx.autoCaptions || (fx.removeSilence && fx.removeFillers)) && req.source.hasAudio) {
         if (AppSettings::whisperCliPath().isEmpty())
-            check.error = QStringLiteral("Automatic captions need whisper-cli, which wasn't found next to the app");
+            check.error = QStringLiteral("Captions and filler-word removal need whisper-cli, which wasn't found next "
+                                         "to the app");
         else if (Whisper::activeModelPath().isEmpty())
-            check.error =
-                QStringLiteral("Automatic captions need the speech model. Download it in Preferences > Captions.");
+            check.error = QStringLiteral("Captions and filler-word removal need the speech model. Download it in "
+                                         "Preferences > Captions.");
     }
     if (!check.ok()) {
         m_model->setStatus(outputId, OutputStatus::Failed, check.error);

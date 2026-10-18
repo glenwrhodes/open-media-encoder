@@ -8,7 +8,7 @@
   <strong>A free, open-source batch media encoder for Windows and Linux, built on Qt 6 and FFmpeg.</strong><br>
   Queue up your media, pick presets, add LUTs, overlays and loudness normalization, and encode
   to H.264, HEVC, AV1, ProRes, DNxHR and more, with GPU acceleration.<br>
-  Hit an exact file size or quality score, compare before and after, cut out silences, and caption
+  Hit an exact file size or quality score, compare before and after, cut out silences and "um"s, and caption
   speech automatically, all offline.
 </p>
 
@@ -114,10 +114,14 @@ The app detects what your machine supports and falls back to software encoding a
 - Detects the spoken language (or pick one of 28), and can translate to English.
 - The speech model (82 MB to 574 MB, your choice in Preferences) downloads once, on first use.
 
-**Remove silence**
+**Remove silence and filler words**
 - Cuts the pauses out of talks, tutorials, screen recordings and podcasts, from video and audio
   together and frame-accurately. Set how quiet counts as silence, the shortest pause to cut, and how
   much breathing room to keep around speech.
+- Optionally removes **filler words** too: "um", "uh", "er", "hmm" and any others you list. Speech
+  recognition (whisper.cpp, with word timings) finds them, and the audio itself gives the exact cut
+  points. Only fillers said on their own are cut, so a filler that runs into a real word is left in
+  rather than clipping the word.
 
 **Effects**
 - 3D LUTs (`.cube`, `.3dl`), image overlay / watermark, text overlay, timecode burn-in.
@@ -181,6 +185,7 @@ Smart encoding options work on top of any preset:
 OpenMediaEncoder.exe --preset "H.264/Match Source - High bitrate" --target-size 10 -o clip-for-discord.mp4 clip.mov
 OpenMediaEncoder.exe --preset "HEVC/HD 1080p" --target-vmaf 95 -o archive.mp4 input.mov
 OpenMediaEncoder.exe --preset "YouTube 1080p HD" --remove-silence --captions srt,embed -o lesson.mp4 lesson.mov
+OpenMediaEncoder.exe --preset "YouTube 1080p HD" --remove-fillers -o narration.mp4 narration.mov
 OpenMediaEncoder.exe --preset "YouTube Shorts 1080x1920" --size 1080x1920 --scale blur --captions burn -o short.mp4 talk.mp4
 ```
 

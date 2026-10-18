@@ -180,7 +180,8 @@ if(OME_BUILD_TESTS)
     target_link_libraries(core_tests PRIVATE encoder_core Qt6::Test)
     # Speech model and sample for the captions test (downloaded by CI; the test is skipped without them).
     target_compile_definitions(core_tests PRIVATE
-        OME_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper-models")
+        OME_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/third_party/whisper-models"
+        OME_TESTS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     if(TARGET bundle_ffmpeg)
         add_dependencies(core_tests bundle_ffmpeg)
     endif()

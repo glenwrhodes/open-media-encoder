@@ -94,6 +94,8 @@ QJsonObject ExportSettings::toJson() const
         {"silenceThreshold", e.silenceThreshold},
         {"silenceMinDuration", e.silenceMinDuration},
         {"silencePadding", e.silencePadding},
+        {"removeFillers", e.removeFillers},
+        {"fillerWords", e.fillerWords},
         {"cropEnabled", e.cropEnabled},
         {"cropLeft", e.cropLeft},
         {"cropTop", e.cropTop},
@@ -198,6 +200,8 @@ ExportSettings ExportSettings::fromJson(const QJsonObject &o)
     e.silenceThreshold = fx.value("silenceThreshold").toDouble(-40.0);
     e.silenceMinDuration = fx.value("silenceMinDuration").toDouble(0.8);
     e.silencePadding = fx.value("silencePadding").toDouble(0.2);
+    e.removeFillers = fx.value("removeFillers").toBool();
+    e.fillerWords = fx.value("fillerWords").toString(e.fillerWords);
     e.cropEnabled = fx.value("cropEnabled").toBool();
     e.cropLeft = fx.value("cropLeft").toInt();
     e.cropTop = fx.value("cropTop").toInt();
@@ -370,7 +374,8 @@ QString ExportSettings::summary(const MediaInfo *source) const
     if (effects.autoCaptions)
         fx << QStringLiteral("Automatic Captions");
     if (effects.removeSilence)
-        fx << QStringLiteral("Remove Silence");
+        fx << (effects.removeFillers ? QStringLiteral("Remove Silence and Filler Words")
+                                     : QStringLiteral("Remove Silence"));
     if (!fx.isEmpty())
         lines << QStringLiteral("Effects: %1").arg(fx.join(", "));
     return lines.join('\n');
