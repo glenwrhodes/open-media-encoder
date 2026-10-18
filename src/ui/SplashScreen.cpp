@@ -17,8 +17,10 @@ const QSize LogicalSize(720, 405);
 }
 
 SplashScreen::SplashScreen()
-    : QSplashScreen(render())
+    : QSplashScreen(render(), Qt::WindowStaysOnTopHint)
 {
+    setCursor(Qt::PointingHandCursor);
+    setToolTip(QStringLiteral("Click to close"));
     m_shownAt = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -105,6 +107,12 @@ void SplashScreen::drawContents(QPainter *painter)
     painter->setFont(f);
     painter->setPen(QColor(140, 150, 165));
     painter->drawText(QRectF(40, LogicalSize.height() - 40, 400, 20), Qt::AlignLeft | Qt::AlignVCenter, m_status);
+}
+
+void SplashScreen::mousePressEvent(QMouseEvent *)
+{
+    close();
+    deleteLater();
 }
 
 void SplashScreen::finishAfter(QWidget *mainWindow, int minimumMs)

@@ -8,7 +8,18 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 - Splash screen: shown the moment the app starts while FFmpeg is checked and presets load, with
-  the app's name, version, release date and author over new artwork.
+  the app's name, version, release date and author over new artwork. It stays up for a few
+  seconds; click it to close it sooner.
+- **GPU everywhere it helps:**
+  - Built-in H.264, HEVC and AV1 presets encode on the GPU (NVENC, Quick Sync, AMF, VideoToolbox,
+    VA-API) when one works on the machine. Turn this off in Preferences > Encoding.
+  - Hardware decoding of sources is on by default (existing settings switch over once).
+  - Speech recognition (captions, filler words) on NVIDIA GPUs on Windows with an optional
+    download of whisper.cpp's CUDA build (Preferences > Captions; offered once when an NVIDIA GPU is
+    found). About 5x faster than the processor on an RTX 4090.
+  - Linux packages include a Vulkan build of whisper.cpp for NVIDIA, AMD and Intel GPUs, used when
+    the system has a Vulkan driver.
+  - The log says when speech recognition ran on the GPU.
 
 ## [1.5.0] - 2026-10-18
 

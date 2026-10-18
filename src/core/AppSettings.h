@@ -27,6 +27,7 @@ QString defaultOutputDir(const QString &sourcePath);
 bool incrementOutputNames();
 int parallelEncodes();
 bool hardwareDecode();
+bool preferGpuEncoding(); // system presets use GPU encoders when one works (default on)
 bool notifyOnFinish();
 bool preventSleepWhileEncoding();
 bool deletePartialOnFailure();
@@ -43,6 +44,7 @@ void setRecordingDir(const QString &dir);
 bool reconnectRecordings(); // start a new part when a stream drops mid-recording
 
 // Speech to text (automatic captions)
-QString whisperCliPath(); // bundled whisper-cli, or one on PATH; empty when missing
+QString whisperCliPath();        // NVIDIA GPU build when installed, else the bundled one or one on PATH; empty if none
+QString bundledWhisperCliPath(); // the whisper-cli shipped with the app
 
 } // namespace AppSettings

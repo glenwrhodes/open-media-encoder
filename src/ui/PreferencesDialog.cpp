@@ -20,6 +20,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QSpinBox>
@@ -98,6 +99,13 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_hwDecode = new QCheckBox(QStringLiteral("Use GPU accelerated decoding when available"));
     m_hwDecode->setChecked(AppSettings::hardwareDecode());
     ef->addRow(QString(), m_hwDecode);
+    m_preferGpu = new QCheckBox(QStringLiteral("Use the GPU for H.264, HEVC and AV1 presets when available"));
+    m_preferGpu->setToolTip(QStringLiteral("Built-in presets encode with NVIDIA NVENC, Intel Quick Sync, AMD AMF, "
+                                           "Apple VideoToolbox or VA-API when that works on this computer: many "
+                                           "times faster than software encoding, with slightly larger files at "
+                                           "the same quality. Outputs already in the queue keep their settings."));
+    m_preferGpu->setChecked(AppSettings::preferGpuEncoding());
+    ef->addRow(QString(), m_preferGpu);
     m_preventSleep = new QCheckBox(QStringLiteral("Keep the computer awake while encoding or recording"));
     m_preventSleep->setChecked(AppSettings::preventSleepWhileEncoding());
     ef->addRow(QString(), m_preventSleep);
@@ -233,6 +241,30 @@ PreferencesDialog::PreferencesDialog(QWidget *parent)
     m_speechInfo->setObjectName("muted");
     m_speechInfo->setWordWrap(true);
     cf->addRow(QString(), m_speechInfo);
+    if (WhisperGpu::supported()) {
+        m_speechGpu = new QCheckBox(QStringLiteral("Use the NVIDIA GPU for speech recognition"));
+        m_speechGpu->setChecked(WhisperGpu::enabled());
+        m_gpuButton = new QPushButton;
+        connect(m_gpuButton, &QPushButton::clicked, this, [this] {
+            if (WhisperGpu::installed()) {
+                if (QMessageBox::question(this, QStringLiteral("NVIDIA GPU Support"),
+                                          QStringLiteral("Remove the downloaded NVIDIA GPU support? Speech recognition "
+                                                         "will run on the processor.")) == QMessageBox::Yes)
+                    WhisperGpu::uninstall();
+            } else {
+                SpeechModelPrompt::downloadGpu(this);
+            }
+            refreshSpeechInfo();
+        });
+        auto *gr = new QHBoxLayout;
+        gr->addWidget(m_speechGpu, 1);
+        gr->addWidget(m_gpuButton);
+        cf->addRow(QStringLiteral("Acceleration:"), gr);
+        m_gpuInfo = new QLabel;
+        m_gpuInfo->setObjectName("muted");
+        m_gpuInfo->setWordWrap(true);
+        cf->addRow(QString(), m_gpuInfo);
+    }
     tabs->addTab(captions, QStringLiteral("Captions"));
     refreshSpeechInfo();
     if (const Whisper::Model *m = Whisper::model(m_speechModel->currentData().toString()))
@@ -257,9 +289,15 @@ void PreferencesDialog::accept()
     AppSettings::setValue("presets/default", m_defaultPreset->currentData().toString());
     AppSettings::setValue("encode/parallel", m_parallel->value());
     AppSettings::setValue("encode/hwDecode", m_hwDecode->isChecked());
+    if (m_preferGpu->isChecked() != AppSettings::preferGpuEncoding()) {
+        AppSettings::setValue("encode/preferGpu", m_preferGpu->isChecked());
+        PresetManager::instance().load();
+    }
     AppSettings::setValue("encode/preventSleep", m_preventSleep->isChecked());
     AppSettings::setValue("recorder/reconnect", m_reconnect->isChecked());
     Whisper::setSelectedModelId(m_speechModel->currentData().toString());
+    if (m_speechGpu)
+        WhisperGpu::setEnabled(m_speechGpu->isChecked());
     AppSettings::setYtDlpPath(QDir::fromNativeSeparators(m_ytDlp->text().trimmed()));
     const QString ff = QDir::fromNativeSeparators(m_ffmpeg->text().trimmed());
     if (ff != AppSettings::ffmpegPath()) {
@@ -283,6 +321,21 @@ void PreferencesDialog::refreshSpeechInfo()
         lines << QStringLiteral("whisper-cli wasn't found next to the app, so captions can't be made.");
     lines << QStringLiteral("Models folder: %1").arg(QDir::toNativeSeparators(Whisper::modelsDir()));
     m_speechInfo->setText(lines.join('\n'));
+    if (m_gpuButton) {
+        const bool have = WhisperGpu::installed();
+        m_gpuButton->setText(have ? QStringLiteral("Remove")
+                                  : QStringLiteral("Download (%1)").arg(formatBytes(WhisperGpu::downloadSize())));
+        m_gpuButton->setEnabled(have || WhisperGpu::nvidiaPresent());
+        m_speechGpu->setEnabled(have);
+        m_gpuInfo->setText(
+            have ? QStringLiteral("NVIDIA GPU support is installed: captions and filler-word removal run on the GPU, "
+                                  "several times faster than on the processor.")
+            : WhisperGpu::nvidiaPresent()
+                ? QStringLiteral("This computer has an NVIDIA GPU. Download GPU support (whisper.cpp's CUDA build) "
+                                 "to make captions and filler-word removal several times faster.")
+                : QStringLiteral("GPU speech recognition needs an NVIDIA graphics card; none was found, so it runs "
+                                 "on the processor."));
+    }
 }
 
 void PreferencesDialog::refreshYtDlpInfo()

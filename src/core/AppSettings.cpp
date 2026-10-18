@@ -1,10 +1,12 @@
 #include "AppSettings.h"
 
+#include "Whisper.h"
 #include "YtDlp.h"
 
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QLibrary>
 #include <QSettings>
 #include <QStandardPaths>
 
@@ -133,7 +135,16 @@ QString defaultOutputDir(const QString &sourcePath)
 
 bool incrementOutputNames() { return value("output/increment", true).toBool(); }
 int parallelEncodes() { return qBound(1, value("encode/parallel", 1).toInt(), 8); }
-bool hardwareDecode() { return value("encode/hwDecode", false).toBool(); }
+bool hardwareDecode()
+{
+    // GPU decoding became the default in 1.5.1; switch earlier settings over once.
+    if (!value("encode/hwDecodeDefaultV2").toBool()) {
+        setValue("encode/hwDecodeDefaultV2", true);
+        setValue("encode/hwDecode", true);
+    }
+    return value("encode/hwDecode", true).toBool();
+}
+bool preferGpuEncoding() { return value("encode/preferGpu", true).toBool(); }
 bool notifyOnFinish() { return value("queue/notify", true).toBool(); }
 bool preventSleepWhileEncoding() { return value("encode/preventSleep", true).toBool(); }
 bool deletePartialOnFailure() { return value("encode/deletePartial", true).toBool(); }
@@ -169,19 +180,41 @@ QString recordingDir()
 void setRecordingDir(const QString &dir) { setValue("recorder/folder", dir); }
 bool reconnectRecordings() { return value("recorder/reconnect", true).toBool(); }
 
-QString whisperCliPath()
+QString bundledWhisperCliPath()
 {
-    const QString configured = value("tools/whisper").toString();
-    if (!configured.isEmpty() && QFileInfo::exists(configured))
-        return configured;
     // Windows keeps whisper-cli and its DLLs in their own folder; elsewhere it is one static binary.
     const QDir app(QCoreApplication::applicationDirPath());
+#ifdef Q_OS_LINUX
+    // The Vulkan build runs on the GPU, but only starts where the system has the Vulkan loader.
+    const QString vulkan = app.filePath(QStringLiteral("whisper-cli-vulkan"));
+    if (QFileInfo::exists(vulkan)) {
+        static const bool hasLoader = [] {
+            QLibrary loader(QStringLiteral("vulkan"), 1);
+            const bool ok = loader.load();
+            loader.unload();
+            return ok;
+        }();
+        if (hasLoader)
+            return vulkan;
+    }
+#endif
     for (const QString &rel : {QStringLiteral("whisper/"), QString()}) {
         const QString p = app.filePath(rel + exeName(QStringLiteral("whisper-cli")));
         if (QFileInfo::exists(p))
             return p;
     }
-    return findTool(QStringLiteral("whisper-cli"));
+    return {};
+}
+
+QString whisperCliPath()
+{
+    const QString configured = value("tools/whisper").toString();
+    if (!configured.isEmpty() && QFileInfo::exists(configured))
+        return configured;
+    if (WhisperGpu::enabled() && WhisperGpu::installed())
+        return WhisperGpu::cliPath();
+    const QString bundled = bundledWhisperCliPath();
+    return bundled.isEmpty() ? findTool(QStringLiteral("whisper-cli")) : bundled;
 }
 
 } // namespace AppSettings

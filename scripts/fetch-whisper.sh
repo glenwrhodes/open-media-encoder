@@ -16,6 +16,9 @@ set -euo pipefail
 TAG="b5454"
 SRC_SHA256="9aa617f410d9c7f0dae952eb2b77eafdcfb310c2d622cca1f83633fd89a213bc"
 SRC_URL="https://github.com/ggml-org/whisper.cpp/archive/refs/tags/${TAG}.tar.gz"
+VULKAN_SDK_VERSION="1.4.363.0"
+VULKAN_SDK_URL="https://sdk.lunarg.com/sdk/download/${VULKAN_SDK_VERSION}/linux/vulkansdk-linux-x86_64-${VULKAN_SDK_VERSION}.tar.xz"
+VULKAN_SDK_SHA256="197962f5cbf80baf2775a03336a01cee7c8745686c65aaa70d3f751ade4d7e43"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 os="$(uname -s)"
@@ -34,7 +37,7 @@ for arg in "$@"; do
 done
 
 stamp="${dest}/VERSION"
-if [[ $force -eq 0 && -f "$stamp" && "$(cat "$stamp")" == "${TAG}-${os}-${machine}" && -x "${dest}/whisper-cli" ]]; then
+if [[ $force -eq 0 && -f "$stamp" && "$(cat "$stamp")" == "${TAG}-${os}-${machine}"* && -x "${dest}/whisper-cli" ]]; then
     echo "whisper.cpp ${TAG} already present in ${dest}"
     exit 0
 fi
@@ -65,21 +68,58 @@ flags=(-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGG
 if [[ "$os" == "Darwin" ]]; then
     flags+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0)
 fi
-echo "Building whisper-cli (${os} ${machine}) ..."
-cmake -S "$src" -B "${work}/build" "${flags[@]}" > "${work}/configure.log" || { cat "${work}/configure.log"; exit 1; }
 jobs="$(getconf _NPROCESSORS_ONLN 2> /dev/null || sysctl -n hw.ncpu)"
-cmake --build "${work}/build" --target whisper-cli --parallel "$jobs" > "${work}/build.log" ||
-    { tail -n 60 "${work}/build.log"; exit 1; }
+build() { # build-dir extra-cmake-flags...
+    local dir="$1"
+    shift
+    cmake -S "$src" -B "$dir" "${flags[@]}" "$@" > "${dir}.configure.log" 2>&1 || { tail -n 40 "${dir}.configure.log"; exit 1; }
+    cmake --build "$dir" --target whisper-cli --parallel "$jobs" > "${dir}.build.log" 2>&1 ||
+        { tail -n 60 "${dir}.build.log"; exit 1; }
+}
+echo "Building whisper-cli (${os} ${machine}) ..."
+build "${work}/build"
 
 rm -rf "$dest"
 mkdir -p "$dest"
 install -m 755 "${work}/build/bin/whisper-cli" "$dest/"
+
+# Linux: a second build that runs on the GPU through Vulkan (NVIDIA, AMD and Intel drivers all provide
+# it). It needs the system's Vulkan loader, so the app uses it only when libvulkan.so.1 is installed and
+# falls back to the CPU build otherwise. Building it needs libvulkan-dev, plus glslc and current
+# headers from the pinned LunarG Vulkan SDK (Ubuntu 22.04 has no glslc package).
+vulkan_note=""
+if [[ "$os" == "Linux" ]]; then
+    if ! { pkg-config --exists vulkan 2> /dev/null || [[ -e /usr/lib/x86_64-linux-gnu/libvulkan.so || -e /usr/lib/aarch64-linux-gnu/libvulkan.so ]]; }; then
+        echo "warning: libvulkan-dev isn't installed, so only the CPU build of whisper-cli was made" >&2
+    elif [[ "$machine" != "x86_64" ]]; then
+        echo "note: the Vulkan build is only made on x86_64" >&2
+    else
+        echo "Downloading the Vulkan SDK ${VULKAN_SDK_VERSION} (for glslc) ..."
+        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "${work}/vulkan-sdk.tar.xz" "$VULKAN_SDK_URL"
+        actual="$(sha256 "${work}/vulkan-sdk.tar.xz")"
+        if [[ "$actual" != "$VULKAN_SDK_SHA256" ]]; then
+            echo "SHA-256 mismatch for ${VULKAN_SDK_URL}" >&2
+            exit 1
+        fi
+        mkdir -p "${work}/vulkan-sdk"
+        tar -xJf "${work}/vulkan-sdk.tar.xz" -C "${work}/vulkan-sdk"
+        sdk="$(ls -d "${work}"/vulkan-sdk/*/x86_64)"
+        echo "Building whisper-cli-vulkan ..."
+        build "${work}/build-vulkan" -DGGML_VULKAN=ON -DCMAKE_PREFIX_PATH="${sdk}" \
+            -DVulkan_INCLUDE_DIR="${sdk}/include" -DVulkan_GLSLC_EXECUTABLE="${sdk}/bin/glslc"
+        install -m 755 "${work}/build-vulkan/bin/whisper-cli" "${dest}/whisper-cli-vulkan"
+        "${dest}/whisper-cli-vulkan" --help 2>&1 | grep -q "usage:" || { echo "whisper-cli-vulkan doesn't run" >&2; exit 1; }
+        vulkan_note="whisper-cli-vulkan: the same with -DGGML_VULKAN=ON (glslc from Vulkan SDK ${VULKAN_SDK_VERSION})"
+    fi
+fi
+
 cp "${src}/LICENSE" "${dest}/LICENSE.txt"
 cat > "${dest}/README.txt" << EOF
 whisper.cpp ${TAG} (MIT License), whisper-cli built from source for ${os} ${machine}
 Source:  ${SRC_URL} (SHA-256 ${SRC_SHA256})
 Options: ${flags[*]}
+${vulkan_note}
 EOF
 "${dest}/whisper-cli" --help 2>&1 | grep -q "usage:" || { echo "whisper-cli doesn't run" >&2; exit 1; }
-echo "${TAG}-${os}-${machine}" > "$stamp"
+echo "${TAG}-${os}-${machine}${vulkan_note:+-vulkan}" > "$stamp"
 echo "whisper.cpp ${TAG} ready in ${dest}"

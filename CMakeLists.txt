@@ -127,6 +127,10 @@ if(WIN32)
     file(GLOB OME_WHISPER_FILES CONFIGURE_DEPENDS "${OME_WHISPER_DIR}/*.exe" "${OME_WHISPER_DIR}/*.dll")
 elseif(EXISTS "${OME_WHISPER_DIR}/whisper-cli")
     set(OME_WHISPER_FILES "${OME_WHISPER_DIR}/whisper-cli")
+    # Linux: the GPU (Vulkan) build, used when the system has a Vulkan loader.
+    if(EXISTS "${OME_WHISPER_DIR}/whisper-cli-vulkan")
+        list(APPEND OME_WHISPER_FILES "${OME_WHISPER_DIR}/whisper-cli-vulkan")
+    endif()
 endif()
 if(OME_WHISPER_FILES)
     add_custom_target(bundle_whisper ALL

@@ -35,6 +35,12 @@ public:
     bool importPreset(const QString &path, QString *error = nullptr);
     bool exportPreset(const QString &id, const QString &path, QString *error = nullptr) const;
 
+    // H.264, HEVC and AV1 system presets use a GPU encoder that works on this machine (the
+    // Preferences setting unless set here, e.g. by tests).
+    void setPreferHardware(bool prefer);
+    // The settings moved to this machine's best GPU encoder, or unchanged when there is none.
+    static ExportSettings onGpu(const ExportSettings &s);
+
 signals:
     void presetsChanged();
 
@@ -43,4 +49,6 @@ private:
     void buildSystemPresets();
     void loadUserPresets();
     QList<Preset> m_presets;
+    bool m_preferHardware = false;
+    bool m_preferHardwareSet = false;
 };

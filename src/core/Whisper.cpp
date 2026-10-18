@@ -1,6 +1,7 @@
 #include "Whisper.h"
 
 #include "AppSettings.h"
+#include "EncoderCaps.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -11,6 +12,7 @@
 #include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
+#include <QProcess>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QTextStream>
@@ -363,6 +365,191 @@ TimeRanges subtractRanges(const TimeRanges &keep, const TimeRanges &cuts, double
 }
 
 } // namespace Whisper
+
+// ================================================================= NVIDIA GPU support
+
+namespace {
+// whisper.cpp b5454 CUDA 12.4 build (needs an NVIDIA driver from 551 on).
+const QString GpuUrl = QStringLiteral(
+    "https://github.com/ggml-org/whisper.cpp/releases/download/b5454/whisper-bin-win-cuda-12.4.0-x64.zip");
+const QByteArray GpuSha256 = "afef0b881c500958921c3f5523b50e59ee2ec9b6f5cbd25b324c51ed308a957a";
+const qint64 GpuSize = 684913404;
+const QString GpuStamp = QStringLiteral("b5454-cuda-12.4");
+// What whisper-cli needs from the archive (CUDA backend, cuBLAS, CUDA runtime, CPU fallbacks).
+const QStringList GpuFiles = {"whisper-cli.exe", "whisper.dll",       "ggml.dll",
+                              "ggml-base.dll",   "ggml-cuda.dll",     "cudart64_12.dll",
+                              "cublas64_12.dll", "cublasLt64_12.dll", "ggml-cpu-*.dll"};
+} // namespace
+
+namespace WhisperGpu {
+
+bool supported()
+{
+#if defined(Q_OS_WIN) && defined(Q_PROCESSOR_X86_64)
+    return true;
+#else
+    return false;
+#endif
+}
+
+QString dir() { return QDir(AppSettings::dataDir()).filePath(QStringLiteral("Tools/whisper-cuda")); }
+
+QString cliPath() { return QDir(dir()).filePath(QStringLiteral("whisper-cli.exe")); }
+
+bool installed()
+{
+    QFile stamp(QDir(dir()).filePath(QStringLiteral("VERSION")));
+    return supported() && QFileInfo::exists(cliPath()) && QFileInfo::exists(QDir(dir()).filePath("ggml-cuda.dll")) &&
+           stamp.open(QIODevice::ReadOnly) && stamp.readAll().trimmed() == GpuStamp.toUtf8();
+}
+
+qint64 downloadSize() { return GpuSize; }
+
+bool enabled() { return AppSettings::value("captions/useGpu", true).toBool(); }
+
+void setEnabled(bool on) { AppSettings::setValue("captions/useGpu", on); }
+
+bool nvidiaPresent()
+{
+    const EncoderCaps &caps = EncoderCaps::instance();
+    return caps.hasEncoder(QStringLiteral("h264_nvenc")) || caps.hasEncoder(QStringLiteral("hevc_nvenc"));
+}
+
+bool uninstall() { return QDir(dir()).removeRecursively(); }
+
+} // namespace WhisperGpu
+
+WhisperGpuInstaller::WhisperGpuInstaller(QObject *parent)
+    : QObject(parent)
+    , m_net(new QNetworkAccessManager(this))
+{}
+
+WhisperGpuInstaller::~WhisperGpuInstaller()
+{
+    if (m_reply)
+        m_reply->abort();
+    delete m_file;
+    delete m_hash;
+    if (!m_zip.isEmpty())
+        QFile::remove(m_zip);
+    if (!m_work.isEmpty())
+        QDir(m_work).removeRecursively();
+}
+
+void WhisperGpuInstaller::start()
+{
+    m_done = false;
+    const QString tools = QDir(AppSettings::dataDir()).filePath(QStringLiteral("Tools"));
+    QDir().mkpath(tools);
+    m_zip = QDir(tools).filePath(QStringLiteral("whisper-cuda.zip"));
+    delete m_file;
+    m_file = new QSaveFile(m_zip);
+    if (!m_file->open(QIODevice::WriteOnly)) {
+        done(false, QStringLiteral("Couldn't write to %1").arg(QDir::toNativeSeparators(tools)));
+        return;
+    }
+    delete m_hash;
+    m_hash = new QCryptographicHash(QCryptographicHash::Sha256);
+    emit status(QStringLiteral("Downloading NVIDIA GPU support…"));
+    QNetworkRequest req{QUrl(GpuUrl)};
+    req.setTransferTimeout(60000);
+    m_reply = m_net->get(req);
+    connect(m_reply, &QNetworkReply::readyRead, this, [this] {
+        const QByteArray chunk = m_reply->readAll();
+        m_hash->addData(chunk);
+        if (m_file->write(chunk) != chunk.size())
+            m_reply->abort();
+    });
+    connect(m_reply, &QNetworkReply::downloadProgress, this,
+            [this](qint64 got, qint64 total) { emit progress(got, total > 0 ? total : GpuSize); });
+    connect(m_reply, &QNetworkReply::finished, this, &WhisperGpuInstaller::onFinished);
+}
+
+void WhisperGpuInstaller::cancel()
+{
+    if (m_reply)
+        m_reply->abort();
+}
+
+void WhisperGpuInstaller::onFinished()
+{
+    QNetworkReply *reply = m_reply;
+    m_reply = nullptr;
+    reply->deleteLater();
+    if (reply->error() != QNetworkReply::NoError) {
+        m_file->cancelWriting();
+        done(false, reply->error() == QNetworkReply::OperationCanceledError
+                        ? QStringLiteral("Download cancelled")
+                        : QStringLiteral("Download failed: %1").arg(reply->errorString()));
+        return;
+    }
+    const QByteArray rest = reply->readAll();
+    m_hash->addData(rest);
+    m_file->write(rest);
+    if (m_hash->result().toHex() != GpuSha256) {
+        m_file->cancelWriting();
+        done(false, QStringLiteral("The download didn't match its published checksum, so it wasn't used"));
+        return;
+    }
+    if (!m_file->commit()) {
+        done(false, QStringLiteral("Couldn't save the download"));
+        return;
+    }
+    unpack();
+}
+
+void WhisperGpuInstaller::unpack()
+{
+    emit status(QStringLiteral("Unpacking NVIDIA GPU support…"));
+    m_work = WhisperGpu::dir() + QStringLiteral(".new");
+    QDir(m_work).removeRecursively();
+    QDir().mkpath(m_work);
+    // Windows 10 and 11 include bsdtar, which reads zip archives.
+    const QString tar = QDir(qEnvironmentVariable("SystemRoot", QStringLiteral("C:/Windows")))
+                            .filePath(QStringLiteral("System32/tar.exe"));
+    QStringList args{"-xf", m_zip, "-C", m_work, "--strip-components", "1"};
+    for (const QString &f : GpuFiles)
+        args << QStringLiteral("Release/") + f;
+    auto *p = new QProcess(this);
+    connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus st) {
+        const QString err = QString::fromUtf8(p->readAllStandardError()).trimmed();
+        p->deleteLater();
+        QFile::remove(m_zip);
+        if (st != QProcess::NormalExit || code != 0 || !QFileInfo::exists(QDir(m_work).filePath("ggml-cuda.dll"))) {
+            done(false, QStringLiteral("Couldn't unpack the download: %1").arg(err.section('\n', -1)));
+            return;
+        }
+        // The Visual C++ runtime that ships with the app's own whisper-cli.
+        const QDir bundled = QFileInfo(AppSettings::bundledWhisperCliPath()).dir();
+        for (const QString &dll : {QStringLiteral("msvcp140.dll"), QStringLiteral("vcruntime140.dll"),
+                                   QStringLiteral("vcruntime140_1.dll"), QStringLiteral("vcomp140.dll")})
+            QFile::copy(bundled.filePath(dll), QDir(m_work).filePath(dll));
+        QFile stamp(QDir(m_work).filePath(QStringLiteral("VERSION")));
+        if (stamp.open(QIODevice::WriteOnly))
+            stamp.write(GpuStamp.toUtf8());
+        stamp.close();
+        QDir(WhisperGpu::dir()).removeRecursively();
+        if (!QDir().rename(m_work, WhisperGpu::dir())) {
+            done(false, QStringLiteral("Couldn't install to %1").arg(QDir::toNativeSeparators(WhisperGpu::dir())));
+            return;
+        }
+        m_work.clear();
+        done(true, {});
+    });
+    connect(p, &QProcess::errorOccurred, this, [this](QProcess::ProcessError e) {
+        if (e == QProcess::FailedToStart)
+            done(false, QStringLiteral("Couldn't run tar.exe to unpack the download"));
+    });
+    p->start(tar, args);
+}
+
+void WhisperGpuInstaller::done(bool ok, const QString &error)
+{
+    if (m_done)
+        return;
+    m_done = true;
+    emit finished(ok, error);
+}
 
 // ================================================================= downloader
 

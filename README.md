@@ -187,6 +187,17 @@ own presets as JSON files.
 - DRM-protected streams (Netflix and similar) can't be recorded. Only record streams you have the
   right to save, and respect each site's terms.
 
+**GPU acceleration, everywhere it helps**
+
+| Work | GPU used |
+| --- | --- |
+| Encoding H.264, HEVC and AV1 | NVIDIA NVENC, Intel Quick Sync, AMD AMF, Apple VideoToolbox, VA-API on Linux. Built-in presets switch to the GPU automatically when one works on your machine (Preferences > Encoding). |
+| Decoding the source | Hardware decoding through FFmpeg (`-hwaccel auto`), on by default |
+| Captions and filler-word removal | NVIDIA GPUs on Windows (optional CUDA download, about 5x faster), Vulkan on Linux (NVIDIA, AMD, Intel), Metal on Apple silicon |
+
+Everything falls back to the processor when no suitable GPU is found. Each GPU encoder is tested
+on your machine at startup, and the log notes when speech recognition ran on the GPU.
+
 **Automation**
 - **Watch folders:** drop files into a folder and they are encoded automatically into `Output/`, and the source moves to `Source/`.
 - **Command line:** headless encoding for scripts and render farms (see below).

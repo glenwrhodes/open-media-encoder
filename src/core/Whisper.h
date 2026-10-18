@@ -79,6 +79,50 @@ TimeRanges subtractRanges(const TimeRanges &keep, const TimeRanges &cuts, double
 
 } // namespace Whisper
 
+// ---- NVIDIA GPU support (Windows): whisper.cpp's official CUDA build, downloaded on request because it
+// is large. It contains the CPU backends too, so it works (more slowly) without an NVIDIA GPU.
+namespace WhisperGpu {
+bool supported();      // this platform has a downloadable GPU build (Windows x64)
+QString dir();         // <data dir>/Tools/whisper-cuda
+bool installed();      // downloaded and complete
+QString cliPath();     // whisper-cli.exe in dir()
+qint64 downloadSize(); // bytes
+bool enabled();        // Preferences: use the GPU build when installed (default on)
+void setEnabled(bool on);
+bool nvidiaPresent(); // an NVIDIA GPU passed the NVENC check at start-up
+bool uninstall();
+} // namespace WhisperGpu
+
+// Downloads and unpacks WhisperGpu (checks the archive's SHA-256 first).
+class WhisperGpuInstaller : public QObject
+{
+    Q_OBJECT
+public:
+    explicit WhisperGpuInstaller(QObject *parent = nullptr);
+    ~WhisperGpuInstaller() override;
+
+    void start();
+    void cancel();
+
+signals:
+    void progress(qint64 received, qint64 total);
+    void status(const QString &text);
+    void finished(bool ok, const QString &error);
+
+private:
+    void onFinished();
+    void unpack();
+    void done(bool ok, const QString &error);
+
+    QNetworkAccessManager *m_net;
+    QNetworkReply *m_reply = nullptr;
+    QSaveFile *m_file = nullptr;
+    QCryptographicHash *m_hash = nullptr;
+    QString m_zip;
+    QString m_work;
+    bool m_done = false;
+};
+
 // Downloads a speech model into Whisper::modelsDir(), verifying size and SHA-256 as it streams.
 class WhisperModelDownloader : public QObject
 {

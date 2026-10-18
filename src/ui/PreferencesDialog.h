@@ -6,6 +6,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QLineEdit;
+class QPushButton;
 class QRadioButton;
 class QSpinBox;
 
@@ -34,6 +35,7 @@ private:
     QSpinBox *m_autoStart;
     QSpinBox *m_parallel;
     QCheckBox *m_hwDecode;
+    QCheckBox *m_preferGpu;
     QCheckBox *m_preventSleep;
     QComboBox *m_defaultPreset;
     QLineEdit *m_ffmpeg;
@@ -43,5 +45,8 @@ private:
     QLabel *m_ytDlpInfo;
     QComboBox *m_speechModel;
     QLabel *m_speechInfo;
+    QCheckBox *m_speechGpu = nullptr;
+    QPushButton *m_gpuButton = nullptr;
+    QLabel *m_gpuInfo = nullptr;
     bool m_ffmpegChanged = false;
 };

@@ -177,6 +177,8 @@ void CoreTests::initTestCase()
     for (const char *f : {"drawtext", "lut3d", "loudnorm", "overlay", "subtitles", "limiter", "palettegen"})
         QVERIFY2(EncoderCaps::instance().hasFilter(QString::fromLatin1(f)), f);
     EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());
+    // Presets as defined, whatever GPU this machine has (GPU presets are tested separately).
+    PresetManager::instance().setPreferHardware(false);
     PresetManager::instance().load();
     QVERIFY(!PresetManager::instance().presets().isEmpty());
 
@@ -1696,9 +1698,37 @@ void CoreTests::hardwareEncoderCommands()
     QCOMPARE(a.at(a.indexOf("-b:v") + 1), a.at(a.indexOf("-maxrate") + 1));
     QCOMPARE(a.at(a.indexOf("-profile:v") + 1), QString("high"));
 
+    // With GPU presets on, software H.264/HEVC presets move to a working GPU encoder.
+    EncoderCaps::instance().setAvailable({"libx264", "libx265", "h264_nvenc", "hevc_nvenc", "aac"}, {"scale"});
+    ExportSettings sw;
+    sw.setFormat("h264");
+    sw.video.codec = "libx264";
+    sw.applyVideoCodecDefaults();
+    sw.video.rateControl = "vbr2";
+    ExportSettings hw = PresetManager::onGpu(sw);
+    QCOMPARE(hw.video.codec, QString("h264_nvenc"));
+    QCOMPARE(hw.video.rateControl, QString("vbr2")); // NVENC has two-pass (multipass) too
+    QCOMPARE(hw.video.speedPreset, Formats::videoCodec("h264_nvenc")->defaultSpeed);
+    sw.video.profile = "high10"; // 10-bit H.264: no GPU encoder takes it
+    QCOMPARE(PresetManager::onGpu(sw).video.codec, QString("libx264"));
+    ExportSettings sw10;
+    sw10.setFormat("hevc");
+    sw10.video.codec = "libx265";
+    sw10.applyVideoCodecDefaults();
+    sw10.video.profile = "main10";
+    hw = PresetManager::onGpu(sw10);
+    QCOMPARE(hw.video.codec, QString("hevc_nvenc"));
+    QCOMPARE(hw.video.profile, QString("main10"));
+    QCOMPARE(hw.video.pixelFormat, QString("p010le"));
+    PresetManager::instance().setPreferHardware(true);
+    PresetManager::instance().load();
+    QCOMPARE(PresetManager::instance().find("sys/h264/YouTube 1080p HD")->settings.video.codec, QString("h264_nvenc"));
+    PresetManager::instance().setPreferHardware(false);
+
     // Put the real encoder list back.
     EncoderCaps::instance().probe(AppSettings::ffmpegPath());
     EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());
+    PresetManager::instance().load();
     QVERIFY(EncoderCaps::instance().hasEncoder("libx264"));
 }
 

@@ -1,12 +1,14 @@
 #include "PresetManager.h"
 
 #include "AppSettings.h"
+#include "CommandBuilder.h"
 #include "EncoderCaps.h"
 #include "Formats.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
 #include <QRegularExpression>
 
@@ -65,8 +67,60 @@ PresetManager &PresetManager::instance()
     return pm;
 }
 
+ExportSettings PresetManager::onGpu(const ExportSettings &s)
+{
+    // Software encoders and their GPU counterparts, preferred in this order.
+    static const QHash<QString, QStringList> gpu = {
+        {"libx264", {"h264_nvenc", "h264_qsv", "h264_amf", "h264_videotoolbox", "h264_vaapi"}},
+        {"libx265", {"hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_videotoolbox", "hevc_vaapi"}},
+        {"libaom-av1", {"av1_nvenc", "av1_qsv", "av1_vaapi"}},
+    };
+    const VideoSettings &v = s.video;
+    const FormatDef *f = Formats::format(s.format);
+    if (!f || !v.enabled || !gpu.contains(v.codec))
+        return s;
+    // Pixel formats the GPU encoders don't take (4:2:2, 4:4:4, 10-bit H.264) stay in software.
+    const QString pix = CommandBuilder::resolvePixelFormat(s, MediaInfo());
+    const bool tenBit = pix.contains(QStringLiteral("10"));
+    if (pix.contains(QStringLiteral("422")) || pix.contains(QStringLiteral("444")) || (tenBit && v.codec == "libx264"))
+        return s;
+    for (const QString &codec : gpu.value(v.codec)) {
+        const VideoCodecDef *def = Formats::videoCodec(codec);
+        if (!def || !f->videoCodecs.contains(codec) || !EncoderCaps::instance().hasEncoder(codec))
+            continue;
+        if (tenBit && !def->pixelFormats.contains(QStringLiteral("p010le")))
+            continue;
+        ExportSettings h = s;
+        VideoSettings &hv = h.video;
+        hv.codec = codec;
+        hv.speedPreset = def->defaultSpeed;
+        if (!def->profiles.contains(hv.profile))
+            hv.profile = tenBit && def->profiles.contains(QStringLiteral("main10")) ? QStringLiteral("main10")
+                                                                                    : def->defaultProfile;
+        if (!def->levels.contains(hv.level))
+            hv.level = def->levels.isEmpty() ? QString() : QStringLiteral("auto");
+        hv.pixelFormat = tenBit ? QStringLiteral("p010le") : QString();
+        if (!def->rateControls.contains(hv.rateControl))
+            hv.rateControl = hv.rateControl == "vbr2" && def->rateControls.contains("vbr1") ? QStringLiteral("vbr1")
+                                                                                            : def->defaultRateControl;
+        // CRF and the GPU encoders' CQ/QP scales line up closely; VideoToolbox counts the other way.
+        hv.quality =
+            def->qualityHigherIsBetter ? def->defaultQuality : qBound(def->qualityMin, v.quality, def->qualityMax);
+        return h;
+    }
+    return s;
+}
+
+void PresetManager::setPreferHardware(bool prefer)
+{
+    m_preferHardware = prefer;
+    m_preferHardwareSet = true;
+}
+
 void PresetManager::load()
 {
+    if (!m_preferHardwareSet)
+        m_preferHardware = AppSettings::preferGpuEncoding();
     m_presets.clear();
     buildSystemPresets();
     loadUserPresets();
@@ -538,10 +592,12 @@ void PresetManager::buildSystemPresets()
         add(s);
     }
 
-    for (const ExportSettings &s : list) {
+    for (ExportSettings s : list) {
         const FormatDef *f = Formats::format(s.format);
         if (!f)
             continue;
+        if (m_preferHardware)
+            s = onGpu(s);
         // Skip presets whose codecs this ffmpeg build can't produce.
         if (f->hasVideo() && (s.video.codec.isEmpty() || !EncoderCaps::instance().hasEncoder(s.video.codec)))
             continue;

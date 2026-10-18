@@ -67,6 +67,7 @@ private:
     void transcribe();
     void transcribeAudio(const QString &wav);
     void captionsReady(const QString &srt);
+    void noteSpeechDevice(const QString &line);
     void startEncode();
     bool startPass(int pass);
     void encodeFinished();
@@ -104,6 +105,7 @@ private:
     QString m_lastCommand;
     TimeRanges m_gaps;           // quiet stretches found by the silence scan
     double m_scanDuration = 0.0; // length of what was scanned
+    QString m_speechDevice;      // "GPU (CUDA)" etc. when whisper.cpp used a GPU
     QString m_captionsSrt;       // cleaned captions, copied next to the output when asked for
     QStringList m_notes;
     QStringList m_extraFiles;

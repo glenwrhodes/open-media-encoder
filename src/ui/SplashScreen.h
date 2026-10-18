@@ -11,12 +11,13 @@ public:
     SplashScreen();
 
     void setStatus(const QString &text);
-    // Closes once the main window is up, keeping the splash on screen at least `minimumMs` in total
-    // so it doesn't just flicker on fast machines.
-    void finishAfter(QWidget *mainWindow, int minimumMs = 1500);
+    // Closes once the main window is up and the splash has been on screen at least `minimumMs`;
+    // a click closes it straight away.
+    void finishAfter(QWidget *mainWindow, int minimumMs = 4000);
 
 protected:
     void drawContents(QPainter *painter) override;
+    void mousePressEvent(QMouseEvent *e) override;
 
 private:
     static QPixmap render();

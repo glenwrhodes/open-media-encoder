@@ -236,6 +236,7 @@ void EncodeTask::findFillers()
                 applyCuts(cuts, count);
             },
             [this](const QString &line) {
+                noteSpeechDevice(line);
                 const auto p = progressRe.match(line);
                 if (p.hasMatch())
                     stepProgress(0.3 + 0.7 * p.captured(1).toInt() / 100.0,
@@ -263,9 +264,11 @@ void EncodeTask::applyCuts(const TimeRanges &fillerCuts, int fillerCount)
         fail(QStringLiteral("The audio is silent throughout, so there is nothing left after removing silence"));
         return;
     }
-    const QString fillers =
-        fx.removeFillers ? QStringLiteral(" and %1 filler word%2").arg(fillerCount).arg(fillerCount == 1 ? "" : "s")
-                         : QString();
+    QString fillers = fx.removeFillers
+                          ? QStringLiteral(" and %1 filler word%2").arg(fillerCount).arg(fillerCount == 1 ? "" : "s")
+                          : QString();
+    if (fx.removeFillers && !m_speechDevice.isEmpty())
+        fillers += QStringLiteral(" (speech recognized on the %1)").arg(m_speechDevice);
     if (keep.size() == 1 && keep.first().first <= 0.001 && keep.first().second >= duration - 0.001) {
         m_notes << (fx.removeFillers ? QStringLiteral("Remove silence: no pauses or filler words to cut")
                                      : QStringLiteral("Remove silence: no pauses long enough to cut"));
@@ -369,6 +372,7 @@ void EncodeTask::transcribeAudio(const QString &wav)
             captionsReady(base + QStringLiteral(".srt"));
         },
         [this](const QString &line) {
+            noteSpeechDevice(line);
             const auto p = progressRe.match(line);
             if (p.hasMatch()) {
                 const int pct = p.captured(1).toInt();
@@ -379,6 +383,19 @@ void EncodeTask::transcribeAudio(const QString &wav)
             if (l.hasMatch())
                 m_req.captionsLanguage = l.captured(1);
         });
+}
+
+// whisper.cpp says which backend it loaded; the log notes when speech recognition ran on a GPU.
+void EncodeTask::noteSpeechDevice(const QString &line)
+{
+    if (line.contains(QStringLiteral("loaded CUDA backend")))
+        m_speechDevice = QStringLiteral("GPU (CUDA)");
+    else if (line.contains(QStringLiteral("loaded Vulkan backend")) ||
+             line.contains(QStringLiteral("ggml_vulkan: Found")))
+        m_speechDevice = QStringLiteral("GPU (Vulkan)");
+    else if (line.contains(QStringLiteral("ggml_metal_init: found device")) ||
+             line.contains(QStringLiteral("ggml_metal_init: picking default device")))
+        m_speechDevice = QStringLiteral("GPU (Metal)");
 }
 
 void EncodeTask::captionsReady(const QString &srt)
@@ -405,10 +422,11 @@ void EncodeTask::captionsReady(const QString &srt)
         }
         m_req.captionsAss = ass;
     }
-    m_notes << QStringLiteral("Captions: %1 lines%2")
+    m_notes << QStringLiteral("Captions: %1 lines%2%3")
                    .arg(cues.size())
                    .arg(m_req.captionsLanguage.isEmpty() ? QString()
-                                                         : QStringLiteral(" (%1)").arg(m_req.captionsLanguage));
+                                                         : QStringLiteral(" (%1)").arg(m_req.captionsLanguage),
+                        m_speechDevice.isEmpty() ? QString() : QStringLiteral(", recognized on the ") + m_speechDevice);
     nextStep();
 }
 

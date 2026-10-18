@@ -40,6 +40,17 @@ Automatic captions use [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (r
 - Linux and macOS packages contain `whisper-cli` built from the pinned source release by
   [`scripts/fetch-whisper.sh`](scripts/fetch-whisper.sh), unmodified.
 
+- Linux packages also contain `whisper-cli-vulkan`, the same source built with Vulkan GPU support.
+  It is compiled with `glslc` and headers from the LunarG Vulkan SDK (pinned by SHA-256 in
+  `scripts/fetch-whisper.sh`; nothing from the SDK is shipped) and uses the system's Vulkan driver.
+
+## NVIDIA GPU support for speech recognition (Windows, downloaded on demand, not bundled)
+
+When you choose to enable it (*Preferences → Captions*), the app downloads whisper.cpp's official
+CUDA 12.4 build (`whisper-bin-win-cuda-12.4.0-x64.zip` from the same whisper.cpp release, pinned by
+SHA-256) into the app's data folder. Besides whisper.cpp (MIT), it contains NVIDIA's CUDA runtime
+and cuBLAS libraries, distributed by the whisper.cpp project under NVIDIA's CUDA Toolkit license.
+
 ## Whisper speech models (downloaded on demand, not bundled)
 
 The speech model is downloaded the first time automatic captions are used, from the official
