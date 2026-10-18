@@ -1,6 +1,7 @@
 #include "EncoderEngine.h"
 
 #include "AppSettings.h"
+#include "EncoderCaps.h"
 #include "Formats.h"
 #include "QualityProbe.h"
 #include "QueueModel.h"
@@ -835,7 +836,7 @@ bool EncoderEngine::startTask(const QString &sourceId, const QString &outputId)
     req.outputPath = path;
     req.inPoint = out->inPoint;
     req.outPoint = out->outPoint;
-    req.hwDecode = AppSettings::hardwareDecode();
+    req.hwDecode = AppSettings::hardwareDecode() && EncoderCaps::instance().hardwareDecodeWorks();
     req.workDir = QDir(AppSettings::tempDir()).filePath(outputId);
     req.passLogFile = QStringLiteral("passlog");
 

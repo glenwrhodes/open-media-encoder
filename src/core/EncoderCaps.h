@@ -23,6 +23,8 @@ public:
     bool hasEncoder(const QString &encoder) const;
     bool hasFilter(const QString &filter) const;
     bool hardwareValidated() const;
+    // -hwaccel auto decodes without crashing on this machine (false until validateHardware() ran).
+    bool hardwareDecodeWorks() const;
     QString version() const;
 
     QStringList availableVideoCodecs(const FormatDef &format) const;
@@ -40,4 +42,5 @@ private:
     QString m_version;
     bool m_probed = false;
     bool m_hwValidated = false;
+    bool m_hwDecodeWorks = false;
 };

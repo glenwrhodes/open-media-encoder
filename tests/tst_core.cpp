@@ -177,6 +177,7 @@ void CoreTests::initTestCase()
     for (const char *f : {"drawtext", "lut3d", "loudnorm", "overlay", "subtitles", "limiter", "palettegen"})
         QVERIFY2(EncoderCaps::instance().hasFilter(QString::fromLatin1(f)), f);
     EncoderCaps::instance().validateHardware(AppSettings::ffmpegPath());
+    qInfo("GPU decoding %s on this machine", EncoderCaps::instance().hardwareDecodeWorks() ? "works" : "is off");
     // Presets as defined, whatever GPU this machine has (GPU presets are tested separately).
     PresetManager::instance().setPreferHardware(false);
     PresetManager::instance().load();

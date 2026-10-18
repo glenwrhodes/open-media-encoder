@@ -3,6 +3,9 @@
 #include "CommandBuilder.h"
 #include "Formats.h"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QMutexLocker>
 #include <QProcess>
 #include <QRegularExpression>
@@ -92,9 +95,38 @@ void EncoderCaps::validateHardware(const QString &ffmpegPath)
         works.insert(enc, ok);
     }
 
+    // Hardware decoding: decode a short H.264 clip with -hwaccel auto. Usually FFmpeg falls back to
+    // software by itself, but some builds abort instead when a GPU library is missing (VA-API on Linux
+    // without drivers), so it is only used where this works.
+    bool decodeOk = false;
+    const QString clip =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("ome-hwdecode-%1.mp4").arg(QCoreApplication::applicationPid()));
+    QProcess make;
+    make.start(ffmpegPath,
+               {"-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=0.4", "-c:v",
+                hasEncoder(QStringLiteral("libx264")) ? QStringLiteral("libx264") : QStringLiteral("mpeg4"), "-pix_fmt",
+                "yuv420p", clip});
+    if (make.waitForFinished(20000) && make.exitStatus() == QProcess::NormalExit && make.exitCode() == 0) {
+        QProcess dec;
+        dec.start(ffmpegPath, {"-hide_banner", "-v", "error", "-hwaccel", "auto", "-i", clip, "-f", "null", "-"});
+        decodeOk = dec.waitForFinished(20000) && dec.exitStatus() == QProcess::NormalExit && dec.exitCode() == 0;
+        if (dec.state() != QProcess::NotRunning) {
+            dec.kill();
+            dec.waitForFinished(1000);
+        }
+    }
+    QFile::remove(clip);
+
     QMutexLocker lock(&m_mutex);
     m_hwWorks = works;
+    m_hwDecodeWorks = decodeOk;
     m_hwValidated = true;
+}
+
+bool EncoderCaps::hardwareDecodeWorks() const
+{
+    QMutexLocker lock(&m_mutex);
+    return m_hwValidated && m_hwDecodeWorks;
 }
 
 bool EncoderCaps::probed() const
