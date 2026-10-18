@@ -6,6 +6,10 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- Splash screen: shown the moment the app starts while FFmpeg is checked and presets load, with
+  the app's name, version, release date and author over new artwork.
+
 ## [1.5.0] - 2026-10-18
 
 ### Added

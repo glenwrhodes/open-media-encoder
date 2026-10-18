@@ -10,6 +10,7 @@
 #include "core/Whisper.h"
 #include "core/YtDlp.h"
 #include "ui/MainWindow.h"
+#include "ui/SplashScreen.h"
 #include "ui/Theme.h"
 
 #include <QApplication>
@@ -533,7 +534,18 @@ int main(int argc, char *argv[])
                                  "[files...]");
     parser.process(app);
 
+    // The window case: show the splash straight away, while FFmpeg is checked and presets load.
+    const bool gui = !parser.isSet("record") && !parser.isSet("preset") && !parser.isSet("list-presets");
+    SplashScreen *splash = nullptr;
+    if (gui) {
+        splash = new SplashScreen;
+        splash->show();
+        splash->setStatus(QStringLiteral("Checking FFmpeg…"));
+    }
+
     EncoderCaps::instance().probe(AppSettings::ffmpegPath());
+    if (splash)
+        splash->setStatus(QStringLiteral("Loading presets…"));
     PresetManager::instance().load();
 
     if (parser.isSet("record"))
@@ -545,9 +557,11 @@ int main(int argc, char *argv[])
         return runCli(app, parser);
     }
 
+    splash->setStatus(QStringLiteral("Opening…"));
     Theme::apply(app);
     MainWindow w;
     w.show();
+    splash->finishAfter(&w);
     w.addFiles(parser.positionalArguments());
 
     // Verify hardware encoders in the background, then refresh presets that depend on them.
